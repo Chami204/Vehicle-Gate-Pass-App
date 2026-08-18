@@ -783,39 +783,66 @@ def maybe_show_transfer_reminder():
 
 
 def _transfer_pending_request():
-    """Freshly check the vehicle, then write the prepared request."""
+    """
+    Transfer the prepared employee request ONLY after the user explicitly
+    presses the final transfer button.
+
+    The request remains in Streamlit session state until the Google Sheet write
+    succeeds. This keeps the existing application flow unchanged while ensuring
+    that simply completing/reviewing the form does not submit anything.
+    """
     draft = st.session_state.get("pending_vehicle_request")
     if not draft:
         return False
 
-    # This is the deliberate final read. It prevents a stale availability
-    # cache from allowing two users to book the same vehicle/time.
-    read_sheet.clear()
-    travel_date = parse_date(draft["travel_date"])
-    start_dt = datetime.fromisoformat(draft["start_datetime"])
-    end_dt = datetime.fromisoformat(draft["end_datetime"])
-
-    if not vehicle_is_available(
-        draft["vehicle_number"], travel_date, start_dt, end_dt
-    ):
-        st.error(
-            "This vehicle/time has just been booked by another user. "
-            "The request was NOT transferred. Please choose another time."
-        )
-        st.session_state.pop("transfer_from_reminder", None)
+    # Prevent accidental duplicate submission caused by Streamlit reruns.
+    if st.session_state.get("_vehicle_transfer_in_progress", False):
+        st.warning("The request is already being transferred. Please wait.")
         return False
 
-    append_row("GatePasses", draft["row"])
-    audit(
-        draft["request_id"],
-        "employee",
-        "Employee / Requisitioner",
-        "Request Submitted",
-        f"Vehicle {draft['vehicle_number']}; fixed driver {draft['driver_name']}",
-    )
-    _clear_pending_request()
-    st.session_state.pop("transfer_from_reminder", None)
-    return True
+    st.session_state["_vehicle_transfer_in_progress"] = True
+
+    try:
+        # This is intentionally the ONLY fresh availability read associated
+        # with the final transfer. The normal form may use cached/read data,
+        # but the final submit checks the latest booking state.
+        read_sheet.clear()
+
+        travel_date = parse_date(draft["travel_date"])
+        start_dt = datetime.fromisoformat(draft["start_datetime"])
+        end_dt = datetime.fromisoformat(draft["end_datetime"])
+
+        if not vehicle_is_available(
+            draft["vehicle_number"], travel_date, start_dt, end_dt
+        ):
+            st.error(
+                "This vehicle/time has just been booked by another user. "
+                "The request was NOT transferred. Please choose another time."
+            )
+            st.session_state.pop("transfer_from_reminder", None)
+            return False
+
+        # The actual GatePass write happens ONLY here.
+        append_row("GatePasses", draft["row"])
+
+        # Keep the existing audit behavior.
+        audit(
+            draft["request_id"],
+            "employee",
+            "Employee / Requisitioner",
+            "Request Submitted",
+            f"Vehicle {draft['vehicle_number']}; fixed driver {draft['driver_name']}",
+        )
+
+        # Only remove the local draft after the transfer has succeeded.
+        _clear_pending_request()
+        st.session_state.pop("transfer_from_reminder", None)
+        st.session_state.pop("transfer_reminder_snooze_until", None)
+
+        return True
+
+    finally:
+        st.session_state["_vehicle_transfer_in_progress"] = False
 
 
 def employee_portal():
