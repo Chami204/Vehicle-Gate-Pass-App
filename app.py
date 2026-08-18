@@ -1,2421 +1,1965 @@
-import uuid
-from datetime import datetime, date, time, timedelta
+"""Vehicle Gate Pass Management System.
 
-import pandas as pd
+Google Sheets is the only application data store.
+Google service-account credentials are read only from Streamlit Secrets.
+No Excel/local data file is created by this application.
+"""
+
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime, date, time, timedelta
+import pandas as pd
+import uuid
 
+st.set_page_config(page_title="Vehicle Gate Pass", page_icon="🚐", layout="wide")
 
-# ============================================================
-# PAGE CONFIG
-# ============================================================
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-st.set_page_config(
-    page_title="Vehicle Gate Pass System",
-    page_icon="🚐",
-    layout="wide",
-)
+SHEET_NAME = "vehicle_gate_pass_data"
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-GOOGLE_SHEET_NAME = st.secrets.get(
-    "google_sheet_name",
-    "vehicle_gate_pass_data"
-)
-
-
-# ============================================================
-# GOOGLE SHEETS STRUCTURE
-# ============================================================
-
-SHEET_COLUMNS = {
-
-    "Departments": [
-        "department",
-        "manager_username",
-        "manager_name",
-        "manager_password",
-    ],
-
-    "Drivers": [
-        "driver_username",
-        "driver_name",
-        "driver_password",
-        "active",
-    ],
-
-    "Vehicles": [
-        "vehicle_number",
-        "vehicle_type",
-        "active",
-    ],
-
+SHEET_HEADERS = {
+    "Users": ["username", "name", "role", "password", "active"],
+    "Departments": ["department", "manager_username", "manager_name", "manager_password", "active"],
+    "Drivers": ["driver_username", "driver_name", "password", "active"],
+    "Vehicles": ["vehicle_number", "vehicle_type", "driver_username", "driver_name", "active"],
     "GatePasses": [
-        "request_id",
-        "created_at",
-        "requisitioner",
-        "department",
-        "contact",
-        "companions",
-        "destination",
-        "purpose",
-        "travel_date",
-        "departure_time",
-        "return_date",
-        "return_time",
-        "vehicle_type",
-        "vehicle_number",
-        "driver_username",
-        "driver_name",
-        "status",
-        "manager_username",
-        "manager_name",
-        "manager_approved_at",
-        "hr_approved_at",
-        "security_released_at",
-        "security_name",
-        "start_mileage",
-        "end_mileage",
-        "driver_started_at",
-        "driver_completed_at",
-        "security_verified_at",
-        "security_notes",
+        "request_id", "created_at", "requisitioner_name", "department",
+        "manager_username", "companions", "duration_minutes", "destination",
+        "purpose", "travel_date", "start_time", "end_time", "vehicle_number",
+        "driver_username", "driver_name", "status",
+        "manager_decision", "manager_approved_by", "manager_approved_at",
+        "hr_decision", "hr_approved_by", "hr_approved_at",
+        "security_released_by", "security_released_at",
+        "start_mileage", "driver_started_at", "end_mileage", "distance_km",
+        "driver_completed_at", "security_verified_by", "security_verified_at",
         "rejection_reason",
     ],
-
     "ApprovalAudit": [
-        "audit_id",
-        "request_id",
-        "timestamp",
-        "actor_username",
-        "actor_name",
-        "actor_role",
-        "action",
-        "remarks",
+        "timestamp", "request_id", "username", "role", "action", "remarks"
     ],
 }
 
+ACTIVE_STATUSES = {
+    "Pending Department Manager",
+    "Pending HR",
+    "Pending Security",
+    "Vehicle Released",
+    "Trip In Progress",
+    "Pending Security Verification",
+}
+
+ROLES = [
+    "Employee / Requisitioner",
+    "Department Manager",
+    "HR Manager",
+    "Security",
+    "Driver",
+    "Administration",
+]
+
 
 # ============================================================
-# GOOGLE AUTHENTICATION
+# GOOGLE SHEETS CONNECTION
 # ============================================================
 
 @st.cache_resource
-def get_google_credentials():
+def get_google_client():
+    """Read the service-account fields from Streamlit Secrets."""
+    required = [
+        "type",
+        "project_id",
+        "private_key_id",
+        "private_key",
+        "client_email",
+        "client_id",
+        "auth_uri",
+        "token_uri",
+        "auth_provider_x509_cert_url",
+        "client_x509_cert_url",
+    ]
 
-    # IMPORTANT:
-    # Your Streamlit secrets are at the TOP LEVEL.
-    #
-    # Therefore we use:
-    # st.secrets["project_id"]
-    #
-    # NOT:
-    # st.secrets["google_service_account"]
+    missing = [key for key in required if key not in st.secrets]
 
-    service_account_info = {
+    if missing:
+        raise RuntimeError(
+            "Missing Google service-account secrets: "
+            + ", ".join(missing)
+        )
+
+    info = {
         "type": st.secrets["type"],
         "project_id": st.secrets["project_id"],
         "private_key_id": st.secrets["private_key_id"],
         "private_key": st.secrets["private_key"],
         "client_email": st.secrets["client_email"],
-        "client_id": st.secrets["client_id"],
+        "client_id": str(st.secrets["client_id"]),
         "auth_uri": st.secrets["auth_uri"],
         "token_uri": st.secrets["token_uri"],
-        "auth_provider_x509_cert_url": st.secrets[
-            "auth_provider_x509_cert_url"
-        ],
-        "client_x509_cert_url": st.secrets[
-            "client_x509_cert_url"
-        ],
-        "universe_domain": st.secrets.get(
-            "universe_domain",
-            "googleapis.com"
-        ),
+        "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["client_x509_cert_url"],
     }
 
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    if "universe_domain" in st.secrets:
+        info["universe_domain"] = st.secrets["universe_domain"]
 
     credentials = Credentials.from_service_account_info(
-        service_account_info,
-        scopes=scopes,
+        info,
+        scopes=SCOPES,
     )
-
-    return credentials
-
-
-@st.cache_resource
-def get_google_client():
-
-    credentials = get_google_credentials()
 
     return gspread.authorize(credentials)
 
 
 @st.cache_resource
 def get_spreadsheet():
-
+    """Open the Google Sheet by ID. Name is only a fallback."""
     client = get_google_client()
 
-    return client.open(GOOGLE_SHEET_NAME)
+    sheet_id = str(
+        st.secrets.get("google_sheet_id", "")
+    ).strip()
+
+    if sheet_id:
+        return client.open_by_key(sheet_id)
+
+    sheet_name = str(
+        st.secrets.get("google_sheet_name", SHEET_NAME)
+    ).strip() or SHEET_NAME
+
+    return client.open(sheet_name)
 
 
-# ============================================================
-# GOOGLE SHEET FUNCTIONS
-# ============================================================
-
-def get_worksheet(sheet_name):
-
+def get_or_create_worksheet(name):
+    """Create a missing worksheet tab with the expected headers."""
     spreadsheet = get_spreadsheet()
 
-    return spreadsheet.worksheet(sheet_name)
+    try:
+        worksheet = spreadsheet.worksheet(name)
+    except gspread.WorksheetNotFound:
+        headers = SHEET_HEADERS[name]
+
+        worksheet = spreadsheet.add_worksheet(
+            title=name,
+            rows=1000,
+            cols=max(20, len(headers) + 2),
+        )
+
+        worksheet.append_row(
+            headers,
+            value_input_option="USER_ENTERED",
+        )
+    else:
+        headers = SHEET_HEADERS[name]
+        current_headers = worksheet.row_values(1)
+
+        if not current_headers:
+            worksheet.append_row(
+                headers,
+                value_input_option="USER_ENTERED",
+            )
+
+    return worksheet
 
 
 @st.cache_data(ttl=10)
-def read_sheet(sheet_name):
-
-    worksheet = get_worksheet(sheet_name)
-
-    values = worksheet.get_all_values()
-
-    expected_columns = SHEET_COLUMNS[sheet_name]
-
-    if not values:
-
-        return pd.DataFrame(
-            columns=expected_columns
-        )
-
-    headers = values[0]
-
-    rows = values[1:]
-
-    normalized_rows = []
-
-    for row in rows:
-
-        row = list(row)
-
-        if len(row) < len(headers):
-
-            row.extend(
-                [""] * (
-                    len(headers) - len(row)
-                )
-            )
-
-        elif len(row) > len(headers):
-
-            row = row[:len(headers)]
-
-        normalized_rows.append(row)
-
-    df = pd.DataFrame(
-        normalized_rows,
-        columns=headers,
-    )
-
-    for column in expected_columns:
-
-        if column not in df.columns:
-
-            df[column] = ""
-
-    df = df[expected_columns]
-
-    return df.fillna("").astype(str)
+def read_sheet(name):
+    worksheet = get_or_create_worksheet(name)
+    records = worksheet.get_all_records()
+    return pd.DataFrame(records)
 
 
-def load_data():
-
-    return {
-        name: read_sheet(name)
-        for name in SHEET_COLUMNS
-    }
-
-
-def clear_data_cache():
-
+def invalidate_data_cache():
     read_sheet.clear()
 
 
-# ============================================================
-# WRITE DATA
-# ============================================================
-
-def append_record(
-    sheet_name,
-    record,
-):
-
-    worksheet = get_worksheet(sheet_name)
-
-    columns = SHEET_COLUMNS[sheet_name]
-
-    row = [
-        str(record.get(column, ""))
-        for column in columns
-    ]
+def append_row(name, row_dict):
+    worksheet = get_or_create_worksheet(name)
+    headers = SHEET_HEADERS[name]
 
     worksheet.append_row(
-        row,
+        [row_dict.get(header, "") for header in headers],
         value_input_option="USER_ENTERED",
     )
 
-    clear_data_cache()
+    invalidate_data_cache()
 
 
-def update_record(
-    sheet_name,
-    key_column,
-    key_value,
-    changes,
-):
-
-    worksheet = get_worksheet(sheet_name)
-
-    values = worksheet.get_all_values()
-
-    if not values:
-
-        return False
-
-    headers = values[0]
-
-    if key_column not in headers:
-
-        return False
-
-    key_index = headers.index(key_column)
+def update_request(request_id, updates):
+    worksheet = get_or_create_worksheet("GatePasses")
+    headers = worksheet.row_values(1)
+    records = worksheet.get_all_records()
 
     target_row = None
 
-    for row_number, row in enumerate(
-        values[1:],
-        start=2,
-    ):
-
-        if len(row) <= key_index:
-
-            continue
-
-        if str(row[key_index]).strip() == str(key_value).strip():
-
+    for row_number, record in enumerate(records, start=2):
+        if str(record.get("request_id", "")).strip() == str(request_id).strip():
             target_row = row_number
             break
 
     if target_row is None:
+        raise ValueError(f"Request {request_id} was not found.")
 
-        return False
-
-    for column, value in changes.items():
-
-        if column not in headers:
-
+    for key, value in updates.items():
+        if key not in headers:
             continue
 
-        column_number = headers.index(column) + 1
+        column_number = headers.index(key) + 1
 
         worksheet.update_cell(
             target_row,
             column_number,
-            str(value),
+            "" if value is None else str(value),
         )
 
-    clear_data_cache()
-
-    return True
+    invalidate_data_cache()
 
 
-# ============================================================
-# AUDIT
-# ============================================================
-
-def add_audit(
-    request_id,
-    user,
-    action,
-    remarks="",
-):
-
-    append_record(
+def audit(request_id, username, role, action, remarks=""):
+    append_row(
         "ApprovalAudit",
         {
-            "audit_id":
-                "AUD-"
-                + uuid.uuid4().hex[:8].upper(),
-
-            "request_id":
-                request_id,
-
-            "timestamp":
-                datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-
-            "actor_username":
-                user.get("username", ""),
-
-            "actor_name":
-                user.get("name", ""),
-
-            "actor_role":
-                user.get("role", ""),
-
-            "action":
-                action,
-
-            "remarks":
-                remarks,
+            "timestamp": now_str(),
+            "request_id": request_id,
+            "username": username,
+            "role": role,
+            "action": action,
+            "remarks": remarks,
         },
     )
 
 
 # ============================================================
-# TIME FUNCTIONS
+# GENERAL HELPERS
 # ============================================================
 
-def generate_time_slots():
-
-    slots = []
-
-    current = datetime.combine(
-        date.today(),
-        time(5, 0),
-    )
-
-    end = datetime.combine(
-        date.today(),
-        time(23, 30),
-    )
-
-    while current <= end:
-
-        slots.append(
-            current.strftime("%H:%M")
-        )
-
-        current += timedelta(
-            minutes=30
-        )
-
-    return slots
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def make_datetime(
-    date_value,
-    time_value,
-):
-
-    if isinstance(date_value, date):
-
-        actual_date = date_value
-
-    else:
-
-        actual_date = pd.to_datetime(
-            date_value
-        ).date()
-
-    actual_time = datetime.strptime(
-        str(time_value),
-        "%H:%M",
-    ).time()
-
-    return datetime.combine(
-        actual_date,
-        actual_time,
-    )
-
-
-# ============================================================
-# VEHICLE AVAILABILITY
-# ============================================================
-
-def vehicle_is_available(
-    data,
-    vehicle_number,
-    travel_date,
-    departure_time,
-    return_date,
-    return_time,
-    ignore_request_id=None,
-):
-
-    try:
-
-        requested_start = make_datetime(
-            travel_date,
-            departure_time,
-        )
-
-        requested_end = make_datetime(
-            return_date,
-            return_time,
-        )
-
-    except Exception:
-
-        return False
-
-    if requested_end <= requested_start:
-
-        return False
-
-    bookings = data["GatePasses"]
-
-    ignored_statuses = {
-        "Rejected by Manager",
-        "Rejected by HR",
-        "Cancelled",
-        "Trip Completed - Security Approved",
+def normalize_bool(value):
+    return str(value).strip().lower() in {
+        "yes",
+        "true",
+        "1",
+        "active",
+        "y",
     }
 
-    for _, booking in bookings.iterrows():
 
-        if (
-            booking["vehicle_number"]
-            != vehicle_number
-        ):
+def parse_date(value):
+    if isinstance(value, datetime):
+        return value.date()
 
-            continue
+    if isinstance(value, date):
+        return value
 
-        if (
-            ignore_request_id
-            and booking["request_id"]
-            == ignore_request_id
-        ):
+    text = str(value).strip()
 
-            continue
-
-        if booking["status"] in ignored_statuses:
-
-            continue
-
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
         try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
 
-            existing_start = make_datetime(
-                booking["travel_date"],
-                booking["departure_time"],
-            )
+    return None
 
-            existing_end = make_datetime(
-                booking["return_date"],
-                booking["return_time"],
-            )
 
-        except Exception:
+def parse_time(value):
+    if isinstance(value, time):
+        return value
 
+    text = str(value).strip()
+
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            pass
+
+    return None
+
+
+def dt_from_parts(d, t):
+    return datetime.combine(d, t)
+
+
+def fmt_time(value):
+    return value.strftime("%H:%M")
+
+
+def generate_request_id():
+    return (
+        "VGP-"
+        + datetime.now().strftime("%Y%m%d")
+        + "-"
+        + uuid.uuid4().hex[:6].upper()
+    )
+
+
+def active_records(dataframe):
+    if dataframe.empty:
+        return dataframe
+
+    if "active" not in dataframe.columns:
+        return dataframe
+
+    return dataframe[
+        dataframe["active"].apply(normalize_bool)
+    ].copy()
+
+
+def get_users():
+    return active_records(read_sheet("Users"))
+
+
+def get_departments():
+    return active_records(read_sheet("Departments"))
+
+
+def get_drivers():
+    return active_records(read_sheet("Drivers"))
+
+
+def get_vehicles():
+    return active_records(read_sheet("Vehicles"))
+
+
+def get_gatepasses():
+    return read_sheet("GatePasses")
+
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+def authenticate_user(username, password, role):
+    """HR, Security and Administration login from Users sheet."""
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    username = str(username).strip()
+    password = str(password).strip()
+    role = str(role).strip().lower()
+
+    for _, row in users.iterrows():
+        if (
+            str(row.get("username", "")).strip() == username
+            and str(row.get("password", "")).strip() == password
+            and str(row.get("role", "")).strip().lower() == role
+            and normalize_bool(row.get("active", "Yes"))
+        ):
+            return row.to_dict()
+
+    return None
+
+
+def authenticate_manager(username, password):
+    """Department Manager login from Departments sheet."""
+    departments = get_departments()
+
+    if departments.empty:
+        return None
+
+    username = str(username).strip()
+    password = str(password).strip()
+
+    for _, row in departments.iterrows():
+        if (
+            str(row.get("manager_username", "")).strip() == username
+            and str(row.get("manager_password", "")).strip() == password
+            and normalize_bool(row.get("active", "Yes"))
+        ):
+            return row.to_dict()
+
+    return None
+
+
+def authenticate_driver(username, password):
+    """Driver login from Drivers sheet."""
+    drivers = get_drivers()
+
+    if drivers.empty:
+        return None
+
+    username = str(username).strip()
+    password = str(password).strip()
+
+    for _, row in drivers.iterrows():
+        if (
+            str(row.get("driver_username", "")).strip() == username
+            and str(row.get("password", "")).strip() == password
+            and normalize_bool(row.get("active", "Yes"))
+        ):
+            return row.to_dict()
+
+    return None
+
+
+# ============================================================
+# VEHICLE / FIXED DRIVER LOGIC
+# ============================================================
+
+def vehicle_driver(vehicle_number):
+    """
+    Return the permanent driver assigned to a vehicle.
+
+    Security never assigns a driver.
+    The vehicle master determines the driver.
+    """
+    vehicles = get_vehicles()
+    drivers = get_drivers()
+
+    for _, vehicle in vehicles.iterrows():
+        if (
+            str(vehicle.get("vehicle_number", "")).strip()
+            == str(vehicle_number).strip()
+        ):
+            driver_username = str(
+                vehicle.get("driver_username", "")
+            ).strip()
+
+            driver_name = str(
+                vehicle.get("driver_name", "")
+            ).strip()
+
+            if (
+                driver_username
+                and not driver_name
+            ):
+                for _, driver in drivers.iterrows():
+                    if (
+                        str(driver.get("driver_username", "")).strip()
+                        == driver_username
+                    ):
+                        driver_name = str(
+                            driver.get("driver_name", "")
+                        ).strip()
+                        break
+
+            return {
+                "driver_username": driver_username,
+                "driver_name": driver_name,
+            }
+
+    return None
+
+
+def request_interval(row):
+    travel_date = parse_date(row.get("travel_date"))
+    start_time = parse_time(row.get("start_time"))
+    end_time = parse_time(row.get("end_time"))
+
+    if not travel_date or not start_time or not end_time:
+        return None, None
+
+    return (
+        dt_from_parts(travel_date, start_time),
+        dt_from_parts(travel_date, end_time),
+    )
+
+
+def vehicle_is_available(
+    vehicle_number,
+    travel_date,
+    start_dt,
+    end_dt,
+    exclude_request_id=None,
+):
+    """
+    A vehicle is unavailable when another active request overlaps it.
+    Rejected and completed requests do not block future bookings.
+    """
+    gatepasses = get_gatepasses()
+
+    if gatepasses.empty:
+        return True
+
+    for _, row in gatepasses.iterrows():
+        if (
+            str(row.get("vehicle_number", "")).strip()
+            != str(vehicle_number).strip()
+        ):
             continue
 
         if (
-            requested_start < existing_end
-            and requested_end > existing_start
+            exclude_request_id
+            and str(row.get("request_id", "")).strip()
+            == str(exclude_request_id).strip()
         ):
+            continue
 
+        status = str(row.get("status", "")).strip()
+
+        if status not in ACTIVE_STATUSES:
+            continue
+
+        row_date = parse_date(row.get("travel_date"))
+
+        if row_date != travel_date:
+            continue
+
+        old_start, old_end = request_interval(row)
+
+        if old_start is None or old_end is None:
+            continue
+
+        if start_dt < old_end and end_dt > old_start:
             return False
 
     return True
 
 
-def get_available_vehicles(
-    data,
-    vehicle_type,
+def available_start_times(
+    vehicle_number,
     travel_date,
-    departure_time,
-    return_date,
-    return_time,
+    duration_minutes,
 ):
+    """
+    Returns 30-minute departure slots between 06:00 and 22:00
+    for which the complete requested duration is available.
+    """
+    slots = []
 
-    vehicles = data["Vehicles"].copy()
+    current = datetime.combine(
+        travel_date,
+        time(6, 0),
+    )
 
-    vehicles = vehicles[
-        vehicles["vehicle_type"].str.strip()
-        == str(vehicle_type).strip()
-    ]
+    latest_start = (
+        datetime.combine(
+            travel_date,
+            time(22, 0),
+        )
+        - timedelta(minutes=duration_minutes)
+    )
 
-    vehicles = vehicles[
-        vehicles["active"]
-        .str.strip()
-        .str.lower()
-        .isin(["yes", "true", "1", "active"])
-    ]
-
-    available = []
-
-    for _, vehicle in vehicles.iterrows():
-
-        vehicle_number = vehicle[
-            "vehicle_number"
-        ]
+    while current <= latest_start:
+        end_dt = current + timedelta(
+            minutes=duration_minutes
+        )
 
         if vehicle_is_available(
-            data,
             vehicle_number,
             travel_date,
-            departure_time,
-            return_date,
-            return_time,
+            current,
+            end_dt,
         ):
+            slots.append(current.time())
 
-            available.append(
-                vehicle_number
-            )
+        current += timedelta(minutes=30)
 
-    return available
+    return slots
 
 
-def get_available_departure_times(
-    data,
-    vehicle_type,
-    travel_date,
-    return_date,
-    return_time,
-):
+def available_vehicles(travel_date, duration_minutes):
+    result = []
 
-    available_times = []
+    for _, vehicle in get_vehicles().iterrows():
+        vehicle_number = str(
+            vehicle.get("vehicle_number", "")
+        ).strip()
 
-    for departure_time in generate_time_slots():
+        vehicle_type = str(
+            vehicle.get("vehicle_type", "")
+        ).strip()
 
-        try:
-
-            departure_dt = make_datetime(
-                travel_date,
-                departure_time,
-            )
-
-            return_dt = make_datetime(
-                return_date,
-                return_time,
-            )
-
-            if return_dt <= departure_dt:
-
-                continue
-
-        except Exception:
-
+        if not vehicle_number:
             continue
 
-        vehicles = get_available_vehicles(
-            data,
-            vehicle_type,
+        times = available_start_times(
+            vehicle_number,
             travel_date,
-            departure_time,
-            return_date,
-            return_time,
+            duration_minutes,
         )
 
-        if vehicles:
+        if times:
+            driver_info = vehicle_driver(
+                vehicle_number
+            ) or {}
 
-            available_times.append(
-                departure_time
+            result.append(
+                {
+                    "vehicle_number": vehicle_number,
+                    "vehicle_type": vehicle_type,
+                    "driver_username": driver_info.get(
+                        "driver_username",
+                        str(vehicle.get("driver_username", "")).strip(),
+                    ),
+                    "driver_name": driver_info.get(
+                        "driver_name",
+                        str(vehicle.get("driver_name", "")).strip(),
+                    ),
+                }
             )
 
-    return available_times
+    return result
 
 
 # ============================================================
-# REQUEST DISPLAY
+# SESSION / LOGOUT
 # ============================================================
 
-def display_request(request):
+def logout():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.write(
-            "**Request ID:**",
-            request["request_id"],
-        )
-
-        st.write(
-            "**Requisitioner:**",
-            request["requisitioner"],
-        )
-
-        st.write(
-            "**Department:**",
-            request["department"],
-        )
-
-        st.write(
-            "**Contact:**",
-            request["contact"],
-        )
-
-        st.write(
-            "**Travelling With:**",
-            request["companions"],
-        )
-
-        st.write(
-            "**Destination:**",
-            request["destination"],
-        )
-
-        st.write(
-            "**Purpose:**",
-            request["purpose"],
-        )
-
-    with col2:
-
-        st.write(
-            "**Vehicle Type:**",
-            request["vehicle_type"],
-        )
-
-        st.write(
-            "**Vehicle:**",
-            request["vehicle_number"]
-            or "Not assigned",
-        )
-
-        st.write(
-            "**Driver:**",
-            request["driver_name"]
-            or "Not assigned",
-        )
-
-        st.write(
-            "**Departure:**",
-            f'{request["travel_date"]} '
-            f'{request["departure_time"]}',
-        )
-
-        st.write(
-            "**Return:**",
-            f'{request["return_date"]} '
-            f'{request["return_time"]}',
-        )
-
-        st.write(
-            "**Status:**",
-            request["status"],
-        )
+    st.rerun()
 
 
 # ============================================================
-# EMPLOYEE PORTAL
+# LOGIN UI
+# ============================================================
+
+def login_portal(role):
+    st.subheader(f"{role} Login")
+
+    if role == "Department Manager":
+        username = st.text_input(
+            "Manager Username",
+            key="manager_username_login",
+        )
+
+        password = st.text_input(
+            "Manager Password",
+            type="password",
+            key="manager_password_login",
+        )
+
+        if st.button(
+            "Login",
+            key="manager_login_button",
+        ):
+            user = authenticate_manager(
+                username,
+                password,
+            )
+
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.role = role
+                st.session_state.username = username.strip()
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error(
+                    "Invalid manager username or password."
+                )
+
+    elif role == "Driver":
+        username = st.text_input(
+            "Driver Username",
+            key="driver_username_login",
+        )
+
+        password = st.text_input(
+            "Driver Password",
+            type="password",
+            key="driver_password_login",
+        )
+
+        if st.button(
+            "Login",
+            key="driver_login_button",
+        ):
+            user = authenticate_driver(
+                username,
+                password,
+            )
+
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.role = role
+                st.session_state.username = username.strip()
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error(
+                    "Invalid driver username or password."
+                )
+
+    else:
+        username = st.text_input(
+            "Username",
+            key=f"{role}_username_login",
+        )
+
+        password = st.text_input(
+            "Password",
+            type="password",
+            key=f"{role}_password_login",
+        )
+
+        if st.button(
+            "Login",
+            key=f"{role}_login_button",
+        ):
+            user = authenticate_user(
+                username,
+                password,
+                role,
+            )
+
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.role = role
+                st.session_state.username = username.strip()
+                st.session_state.user = user
+                st.rerun()
+            else:
+                st.error(
+                    "Invalid username or password."
+                )
+
+
+# ============================================================
+# EMPLOYEE / REQUISITIONER
 # ============================================================
 
 def employee_portal():
+    st.header("🚐 Vehicle Requisition")
 
-    st.title(
-        "🚐 Vehicle Gate Pass Request"
-    )
+    departments = get_departments()
 
-    st.caption(
-        "No password is required for vehicle requests."
-    )
-
-    data = load_data()
-
-    departments = sorted(
-        [
-            x for x in
-            data["Departments"]["department"].tolist()
-            if x.strip()
-        ]
-    )
-
-    vehicle_types = sorted(
-        [
-            x for x in
-            data["Vehicles"]["vehicle_type"].tolist()
-            if x.strip()
-        ]
-    )
-
-    if not departments:
-
+    if (
+        departments.empty
+        or "department" not in departments.columns
+    ):
         st.error(
-            "No departments found in the Departments sheet."
+            "No departments are configured in the Departments sheet."
         )
-
-        return
-
-    if not vehicle_types:
-
-        st.error(
-            "No vehicle types found in the Vehicles sheet."
-        )
-
-        return
-
-    st.subheader(
-        "Request a Vehicle"
-    )
-
-    with st.form("vehicle_request_form"):
-
-        col1, col2 = st.columns(2)
-
-        requisitioner = col1.text_input(
-            "Requisitioner Name *"
-        )
-
-        department = col2.selectbox(
-            "Department *",
-            departments,
-        )
-
-        contact = col1.text_input(
-            "Contact Number"
-        )
-
-        companions = col2.text_input(
-            "Person(s) Travelling With"
-        )
-
-        destination = st.text_input(
-            "Destination *"
-        )
-
-        purpose = st.text_area(
-            "Purpose *"
-        )
-
-        st.markdown(
-            "### Trip Details"
-        )
-
-        col1, col2 = st.columns(2)
-
-        travel_date = col1.date_input(
-            "Travel Date *",
-            min_value=date.today(),
-        )
-
-        return_date = col2.date_input(
-            "Return Date *",
-            min_value=date.today(),
-        )
-
-        vehicle_type = col1.selectbox(
-            "Vehicle Type *",
-            vehicle_types,
-        )
-
-        return_times = generate_time_slots()
-
-        return_time = col2.selectbox(
-            "Return Time *",
-            return_times,
-            index=(
-                return_times.index("17:00")
-                if "17:00" in return_times
-                else 0
-            ),
-        )
-
-        # ----------------------------------------------------
-        # ONLY SHOW DEPARTURE TIMES WHERE A VEHICLE EXISTS
-        # ----------------------------------------------------
-
-        available_departure_times = (
-            get_available_departure_times(
-                data,
-                vehicle_type,
-                travel_date,
-                return_date,
-                return_time,
-            )
-        )
-
-        if available_departure_times:
-
-            departure_time = st.selectbox(
-                "Available Departure Time *",
-                available_departure_times,
-            )
-
-            available_vehicles = (
-                get_available_vehicles(
-                    data,
-                    vehicle_type,
-                    travel_date,
-                    departure_time,
-                    return_date,
-                    return_time,
-                )
-            )
-
-            if available_vehicles:
-
-                vehicle_number = st.selectbox(
-                    "Available Vehicle *",
-                    available_vehicles,
-                )
-
-                st.success(
-                    f"{len(available_vehicles)} "
-                    "vehicle(s) available."
-                )
-
-            else:
-
-                vehicle_number = ""
-
-        else:
-
-            departure_time = ""
-
-            vehicle_number = ""
-
-            st.warning(
-                "No vehicles are available for "
-                "the selected date, vehicle type "
-                "and return time."
-            )
-
-        submitted = st.form_submit_button(
-            "Submit Vehicle Request",
-            type="primary",
-        )
-
-    if submitted:
-
-        if not requisitioner.strip():
-
-            st.error(
-                "Please enter the requisitioner's name."
-            )
-
-            return
-
-        if not destination.strip():
-
-            st.error(
-                "Please enter the destination."
-            )
-
-            return
-
-        if not purpose.strip():
-
-            st.error(
-                "Please enter the purpose."
-            )
-
-            return
-
-        if not departure_time:
-
-            st.error(
-                "No available departure time."
-            )
-
-            return
-
-        if not vehicle_number:
-
-            st.error(
-                "No available vehicle."
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # RECHECK AVAILABILITY BEFORE SAVING
-        # ----------------------------------------------------
-
-        fresh_data = load_data()
-
-        if not vehicle_is_available(
-            fresh_data,
-            vehicle_number,
-            travel_date,
-            departure_time,
-            return_date,
-            return_time,
-        ):
-
-            st.error(
-                "This vehicle was just booked. "
-                "Please select another available time."
-            )
-
-            st.rerun()
-
-        # ----------------------------------------------------
-        # FIND DEPARTMENT MANAGER
-        # ----------------------------------------------------
-
-        department_rows = fresh_data[
-            "Departments"
-        ]
-
-        manager_rows = department_rows[
-            department_rows["department"].str.strip()
-            == department.strip()
-        ]
-
-        if manager_rows.empty:
-
-            st.error(
-                "No manager is configured for "
-                "this department."
-            )
-
-            return
-
-        manager = manager_rows.iloc[0]
-
-        request_id = (
-            "VGP-"
-            + datetime.now().strftime("%Y%m%d")
-            + "-"
-            + uuid.uuid4().hex[:6].upper()
-        )
-
-        append_record(
-            "GatePasses",
-            {
-                "request_id":
-                    request_id,
-
-                "created_at":
-                    datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-
-                "requisitioner":
-                    requisitioner.strip(),
-
-                "department":
-                    department,
-
-                "contact":
-                    contact.strip(),
-
-                "companions":
-                    companions.strip(),
-
-                "destination":
-                    destination.strip(),
-
-                "purpose":
-                    purpose.strip(),
-
-                "travel_date":
-                    travel_date.strftime(
-                        "%Y-%m-%d"
-                    ),
-
-                "departure_time":
-                    departure_time,
-
-                "return_date":
-                    return_date.strftime(
-                        "%Y-%m-%d"
-                    ),
-
-                "return_time":
-                    return_time,
-
-                "vehicle_type":
-                    vehicle_type,
-
-                "vehicle_number":
-                    vehicle_number,
-
-                "driver_username":
-                    "",
-
-                "driver_name":
-                    "",
-
-                "status":
-                    "Pending Department Manager",
-
-                "manager_username":
-                    manager[
-                        "manager_username"
-                    ],
-
-                "manager_name":
-                    manager[
-                        "manager_name"
-                    ],
-            },
-        )
-
-        add_audit(
-            request_id,
-            {
-                "username":
-                    "self-service",
-
-                "name":
-                    requisitioner,
-
-                "role":
-                    "Requisitioner",
-            },
-            "REQUEST_SUBMITTED",
-        )
-
-        st.success(
-            "Vehicle request submitted successfully."
-        )
-
-        st.markdown(
-            "### Your Request ID"
-        )
-
-        st.code(
-            request_id
-        )
-
-        st.info(
-            "Keep this Request ID for tracking."
-        )
-
-    # ========================================================
-    # REQUEST STATUS
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "Check Request Status"
-    )
-
-    request_lookup = st.text_input(
-        "Request ID",
-        key="request_status_lookup",
-    )
-
-    if request_lookup.strip():
-
-        current_data = load_data()
-
-        matches = current_data[
-            "GatePasses"
-        ][
-            current_data[
-                "GatePasses"
-            ]["request_id"].str.strip()
-            == request_lookup.strip()
-        ]
-
-        if matches.empty:
-
-            st.warning(
-                "Request not found."
-            )
-
-        else:
-
-            request = matches.iloc[0]
-
-            display_request(
-                request
-            )
-
-
-# ============================================================
-# MANAGER LOGIN
-# ============================================================
-
-def manager_login():
-
-    st.title(
-        "👔 Department Manager Login"
-    )
-
-    data = load_data()
-
-    departments = data[
-        "Departments"
-    ]
-
-    if departments.empty:
-
-        st.error(
-            "No departments configured."
-        )
-
         return
 
     department_names = sorted(
         [
-            x for x in
-            departments["department"].tolist()
-            if x.strip()
+            str(value).strip()
+            for value in departments["department"].tolist()
+            if str(value).strip()
         ]
     )
 
-    department = st.selectbox(
-        "Department",
-        department_names,
-    )
+    with st.form("vehicle_request_form"):
+        col1, col2 = st.columns(2)
 
-    username = st.text_input(
-        "Manager Username"
-    )
+        with col1:
+            requisitioner = st.text_input(
+                "Requisitioner Name *"
+            )
 
-    password = st.text_input(
-        "Manager Password",
-        type="password",
-    )
+            department = st.selectbox(
+                "Department *",
+                department_names,
+            )
 
-    if st.button(
-        "Login",
-        type="primary",
+            companions = st.text_area(
+                "Person(s) travelling with you",
+                placeholder="Enter names separated by commas",
+            )
+
+            destination = st.text_input(
+                "Where are you going? *"
+            )
+
+            purpose = st.text_area(
+                "Purpose of travel *"
+            )
+
+        with col2:
+            travel_date = st.date_input(
+                "Travel Date *",
+                min_value=date.today(),
+            )
+
+            duration_options = {
+                "30 minutes": 30,
+                "1 hour": 60,
+                "1.5 hours": 90,
+                "2 hours": 120,
+                "3 hours": 180,
+                "4 hours": 240,
+                "6 hours": 360,
+                "8 hours": 480,
+                "10 hours": 600,
+                "12 hours": 720,
+            }
+
+            duration_label = st.selectbox(
+                "Expected duration *",
+                list(duration_options.keys()),
+            )
+
+            duration_minutes = duration_options[
+                duration_label
+            ]
+
+        st.divider()
+
+        vehicles = available_vehicles(
+            travel_date,
+            duration_minutes,
+        )
+
+        if not vehicles:
+            st.warning(
+                "No vehicles have an available time slot "
+                "for the selected date and duration."
+            )
+
+            selected_vehicle_number = None
+            selected_start = None
+
+        else:
+            vehicle_labels = [
+                (
+                    f"{vehicle['vehicle_number']} — "
+                    f"{vehicle['vehicle_type']} — "
+                    f"Fixed Driver: "
+                    f"{vehicle['driver_name'] or vehicle['driver_username']}"
+                )
+                for vehicle in vehicles
+            ]
+
+            selected_label = st.selectbox(
+                "Available Vehicle *",
+                vehicle_labels,
+            )
+
+            selected_index = vehicle_labels.index(
+                selected_label
+            )
+
+            selected_vehicle = vehicles[
+                selected_index
+            ]
+
+            selected_vehicle_number = (
+                selected_vehicle["vehicle_number"]
+            )
+
+            times = available_start_times(
+                selected_vehicle_number,
+                travel_date,
+                duration_minutes,
+            )
+
+            if not times:
+                st.error(
+                    "No available time is currently "
+                    "offered for this vehicle."
+                )
+                selected_start = None
+
+            else:
+                selected_start = st.selectbox(
+                    "Available Departure Time *",
+                    times,
+                    format_func=fmt_time,
+                )
+
+                st.info(
+                    f"**Vehicle:** {selected_vehicle_number}\n\n"
+                    f"**Fixed Driver:** "
+                    f"{selected_vehicle['driver_name'] or selected_vehicle['driver_username']}\n\n"
+                    "The requisitioner cannot change the vehicle's assigned driver."
+                )
+
+        submitted = st.form_submit_button(
+            "Submit Vehicle Request",
+            disabled=(
+                not vehicles
+                or selected_start is None
+            ),
+        )
+
+    if not submitted:
+        return
+
+    if (
+        not requisitioner.strip()
+        or not destination.strip()
+        or not purpose.strip()
     ):
+        st.error(
+            "Please complete all required fields."
+        )
+        return
 
-        matches = departments[
-            (
-                departments["department"].str.strip()
-                == department.strip()
-            )
-            &
-            (
-                departments["manager_username"].str.strip()
-                == username.strip()
-            )
-        ]
+    manager = None
 
-        if matches.empty:
+    for _, row in departments.iterrows():
+        if (
+            str(row.get("department", "")).strip()
+            == department
+        ):
+            manager = row.to_dict()
+            break
 
-            st.error(
-                "Invalid manager username."
-            )
+    if not manager:
+        st.error(
+            "No manager is configured for this department."
+        )
+        return
 
-            return
+    start_dt = datetime.combine(
+        travel_date,
+        selected_start,
+    )
 
-        manager = matches.iloc[0]
+    end_dt = start_dt + timedelta(
+        minutes=duration_minutes
+    )
 
-        if password != manager[
-            "manager_password"
-        ]:
+    # Final availability check immediately before saving.
+    if not vehicle_is_available(
+        selected_vehicle_number,
+        travel_date,
+        start_dt,
+        end_dt,
+    ):
+        st.error(
+            "This vehicle/time was just booked. "
+            "Please select another available time."
+        )
+        return
 
-            st.error(
-                "Invalid manager password."
-            )
+    driver_info = (
+        vehicle_driver(
+            selected_vehicle_number
+        )
+        or {}
+    )
 
-            return
+    request_id = generate_request_id()
 
-        st.session_state.user = {
-            "role":
-                "Department Manager",
+    row = {
+        "request_id": request_id,
+        "created_at": now_str(),
+        "requisitioner_name": requisitioner.strip(),
+        "department": department,
+        "manager_username": str(
+            manager.get("manager_username", "")
+        ).strip(),
+        "companions": companions.strip(),
+        "duration_minutes": duration_minutes,
+        "destination": destination.strip(),
+        "purpose": purpose.strip(),
+        "travel_date": travel_date.isoformat(),
+        "start_time": start_dt.strftime("%H:%M"),
+        "end_time": end_dt.strftime("%H:%M"),
+        "vehicle_number": selected_vehicle_number,
+        "driver_username": driver_info.get(
+            "driver_username",
+            "",
+        ),
+        "driver_name": driver_info.get(
+            "driver_name",
+            "",
+        ),
+        "status": "Pending Department Manager",
+        "manager_decision": "Pending",
+        "manager_approved_by": "",
+        "manager_approved_at": "",
+        "hr_decision": "Pending",
+        "hr_approved_by": "",
+        "hr_approved_at": "",
+        "security_released_by": "",
+        "security_released_at": "",
+        "start_mileage": "",
+        "driver_started_at": "",
+        "end_mileage": "",
+        "distance_km": "",
+        "driver_completed_at": "",
+        "security_verified_by": "",
+        "security_verified_at": "",
+        "rejection_reason": "",
+    }
 
-            "username":
-                manager["manager_username"],
+    append_row(
+        "GatePasses",
+        row,
+    )
 
-            "name":
-                manager["manager_name"],
+    audit(
+        request_id,
+        "employee",
+        "Employee / Requisitioner",
+        "Request Submitted",
+        (
+            f"Vehicle {selected_vehicle_number}; "
+            f"fixed driver {driver_info.get('driver_name', '')}"
+        ),
+    )
 
-            "department":
-                manager["department"],
-        }
+    st.success(
+        f"Request {request_id} submitted successfully."
+    )
 
-        st.rerun()
+    st.info(
+        "Approval route: "
+        f"{manager.get('manager_name', manager.get('manager_username', 'Manager'))}"
+        " → HR Manager → Security"
+    )
 
 
 # ============================================================
-# MANAGER PORTAL
+# DEPARTMENT MANAGER
 # ============================================================
 
 def manager_portal():
-
-    st.title(
-        "👔 Department Manager Portal"
+    user = st.session_state.get(
+        "user",
+        {},
     )
 
-    user = st.session_state.user
-
-    st.write(
-        f"Department: **{user['department']}**"
+    username = st.session_state.get(
+        "username",
+        "",
     )
 
-    data = load_data()
+    st.header("👤 Department Manager")
 
-    pending = data[
-        "GatePasses"
-    ][
+    st.caption(
+        f"Department: {user.get('department', '')} | "
+        f"Manager: {user.get('manager_name', username)}"
+    )
+
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info(
+            "No vehicle requests found."
+        )
+        return
+
+    department = str(
+        user.get("department", "")
+    ).strip()
+
+    manager_username = str(
+        user.get("manager_username", username)
+    ).strip()
+
+    pending = dataframe[
         (
-            data["GatePasses"]["status"]
+            dataframe["status"].astype(str)
             == "Pending Department Manager"
         )
-        &
-        (
-            data["GatePasses"]["manager_username"]
-            == user["username"]
+        & (
+            (
+                dataframe["manager_username"]
+                .astype(str)
+                .str.strip()
+                == manager_username
+            )
+            | (
+                dataframe["department"]
+                .astype(str)
+                .str.strip()
+                == department
+            )
         )
     ]
 
     if pending.empty:
-
         st.success(
-            "No pending vehicle requests."
+            "No pending requests for your department."
         )
-
         return
 
-    request_id = st.selectbox(
-        "Select Request",
-        pending["request_id"].tolist(),
-    )
-
-    request = pending[
-        pending["request_id"] == request_id
-    ].iloc[0]
-
-    display_request(request)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        if st.button(
-            "✅ Approve Request",
-            type="primary",
-            use_container_width=True,
-        ):
-
-            fresh_data = load_data()
-
-            if not vehicle_is_available(
-                fresh_data,
-                request["vehicle_number"],
-                request["travel_date"],
-                request["departure_time"],
-                request["return_date"],
-                request["return_time"],
-                ignore_request_id=request_id,
-            ):
-
-                st.error(
-                    "The selected vehicle is no longer "
-                    "available."
-                )
-
-                return
-
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "status":
-                        "Pending HR",
-
-                    "manager_approved_at":
-                        datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-                },
-            )
-
-            add_audit(
-                request_id,
-                user,
-                "MANAGER_APPROVED",
-            )
-
-            st.success(
-                "Approved. Sent to HR."
-            )
-
-            st.rerun()
-
-    with col2:
-
-        if st.button(
-            "❌ Reject Request",
-            use_container_width=True,
-        ):
-
-            st.session_state[
-                "manager_reject"
-            ] = True
-
-    if st.session_state.get(
-        "manager_reject",
-        False,
-    ):
-
-        reason = st.text_area(
-            "Reason for rejection"
+    for _, row in pending.iterrows():
+        request_id = str(
+            row.get("request_id", "")
         )
 
-        if st.button(
-            "Confirm Rejection",
-            type="primary",
+        with st.expander(
+            (
+                f"{request_id} — "
+                f"{row.get('requisitioner_name', '')} — "
+                f"{row.get('travel_date', '')} "
+                f"{row.get('start_time', '')}"
+            )
         ):
+            col1, col2 = st.columns(2)
 
-            if not reason.strip():
-
-                st.warning(
-                    "Enter a reason."
+            with col1:
+                st.write(
+                    f"**Department:** {row.get('department', '')}"
+                )
+                st.write(
+                    f"**Destination:** {row.get('destination', '')}"
+                )
+                st.write(
+                    f"**Purpose:** {row.get('purpose', '')}"
+                )
+                st.write(
+                    f"**Passengers:** {row.get('companions', '')}"
                 )
 
-                return
+            with col2:
+                st.write(
+                    f"**Vehicle:** {row.get('vehicle_number', '')}"
+                )
+                st.write(
+                    f"**Fixed Driver:** {row.get('driver_name', '')}"
+                )
+                st.write(
+                    f"**Date:** {row.get('travel_date', '')}"
+                )
+                st.write(
+                    f"**Time:** {row.get('start_time', '')} - "
+                    f"{row.get('end_time', '')}"
+                )
 
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "status":
-                        "Rejected by Manager",
+            reason = st.text_input(
+                "Remarks / rejection reason",
+                key=f"manager_reason_{request_id}",
+            )
 
-                    "rejection_reason":
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                if st.button(
+                    "Approve",
+                    key=f"manager_approve_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Pending HR",
+                            "manager_decision": "Approved",
+                            "manager_approved_by": username,
+                            "manager_approved_at": now_str(),
+                        },
+                    )
+
+                    audit(
+                        request_id,
+                        username,
+                        "Department Manager",
+                        "Manager Approved",
                         reason,
-                },
-            )
+                    )
 
-            add_audit(
-                request_id,
-                user,
-                "MANAGER_REJECTED",
-                reason,
-            )
+                    st.success(
+                        "Request approved and sent to HR."
+                    )
+                    st.rerun()
 
-            st.success(
-                "Request rejected."
-            )
+            with col_b:
+                if st.button(
+                    "Reject",
+                    key=f"manager_reject_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Rejected by Department Manager",
+                            "manager_decision": "Rejected",
+                            "manager_approved_by": username,
+                            "manager_approved_at": now_str(),
+                            "rejection_reason": reason,
+                        },
+                    )
 
-            st.session_state[
-                "manager_reject"
-            ] = False
+                    audit(
+                        request_id,
+                        username,
+                        "Department Manager",
+                        "Manager Rejected",
+                        reason,
+                    )
 
-            st.rerun()
-
-
-# ============================================================
-# HR LOGIN
-# ============================================================
-
-def hr_login():
-
-    st.title(
-        "👩‍💼 HR Manager Login"
-    )
-
-    password = st.text_input(
-        "HR Password",
-        type="password",
-    )
-
-    if st.button(
-        "Login",
-        type="primary",
-    ):
-
-        expected = st.secrets.get(
-            "hr_password",
-            "",
-        )
-
-        if password == expected:
-
-            st.session_state.user = {
-                "role":
-                    "HR Manager",
-
-                "username":
-                    "hr_manager",
-
-                "name":
-                    "HR Manager",
-            }
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "Invalid HR password."
-            )
+                    st.warning(
+                        "Request rejected."
+                    )
+                    st.rerun()
 
 
 # ============================================================
-# HR PORTAL
+# HR MANAGER
 # ============================================================
 
 def hr_portal():
-
-    st.title(
-        "👩‍💼 HR Approval"
+    username = st.session_state.get(
+        "username",
+        "",
     )
 
-    user = st.session_state.user
+    st.header("👩‍💼 HR Manager")
 
-    data = load_data()
+    dataframe = get_gatepasses()
 
-    pending = data[
-        "GatePasses"
-    ][
-        data["GatePasses"]["status"]
+    if dataframe.empty:
+        st.info(
+            "No vehicle requests found."
+        )
+        return
+
+    pending = dataframe[
+        dataframe["status"].astype(str)
         == "Pending HR"
     ]
 
     if pending.empty:
-
         st.success(
-            "No requests awaiting HR approval."
-        )
-
-        return
-
-    request_id = st.selectbox(
-        "Select Request",
-        pending["request_id"].tolist(),
-    )
-
-    request = pending[
-        pending["request_id"] == request_id
-    ].iloc[0]
-
-    display_request(request)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        if st.button(
-            "✅ Approve HR",
-            type="primary",
-            use_container_width=True,
-        ):
-
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "status":
-                        "Pending Security",
-
-                    "hr_approved_at":
-                        datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-                },
-            )
-
-            add_audit(
-                request_id,
-                user,
-                "HR_APPROVED",
-            )
-
-            st.success(
-                "Approved. Sent to Security."
-            )
-
-            st.rerun()
-
-    with col2:
-
-        if st.button(
-            "❌ Reject HR",
-            use_container_width=True,
-        ):
-
-            st.session_state[
-                "hr_reject"
-            ] = True
-
-    if st.session_state.get(
-        "hr_reject",
-        False,
-    ):
-
-        reason = st.text_area(
-            "HR Rejection Reason"
-        )
-
-        if st.button(
-            "Confirm HR Rejection",
-            type="primary",
-        ):
-
-            if not reason.strip():
-
-                st.warning(
-                    "Enter a reason."
-                )
-
-                return
-
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "status":
-                        "Rejected by HR",
-
-                    "rejection_reason":
-                        reason,
-                },
-            )
-
-            add_audit(
-                request_id,
-                user,
-                "HR_REJECTED",
-                reason,
-            )
-
-            st.success(
-                "Request rejected."
-            )
-
-            st.session_state[
-                "hr_reject"
-            ] = False
-
-            st.rerun()
-
-
-# ============================================================
-# SECURITY LOGIN
-# ============================================================
-
-def security_login():
-
-    st.title(
-        "🛡️ Security Login"
-    )
-
-    password = st.text_input(
-        "Security Password",
-        type="password",
-    )
-
-    if st.button(
-        "Login",
-        type="primary",
-    ):
-
-        expected = st.secrets.get(
-            "security_password",
-            "",
-        )
-
-        if password == expected:
-
-            st.session_state.user = {
-                "role":
-                    "Security",
-
-                "username":
-                    "security",
-
-                "name":
-                    "Security",
-            }
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "Invalid security password."
-            )
-
-
-# ============================================================
-# SECURITY PORTAL
-# ============================================================
-
-def security_portal():
-
-    st.title(
-        "🛡️ Security Portal"
-    )
-
-    user = st.session_state.user
-
-    data = load_data()
-
-    # ========================================================
-    # RELEASE VEHICLE
-    # ========================================================
-
-    st.subheader(
-        "Approved Requests"
-    )
-
-    pending = data[
-        "GatePasses"
-    ][
-        data["GatePasses"]["status"]
-        == "Pending Security"
-    ]
-
-    if pending.empty:
-
-        st.info(
-            "No requests waiting for Security."
+            "No pending HR approvals."
         )
 
     else:
-
-        request_id = st.selectbox(
-            "Select Request",
-            pending["request_id"].tolist(),
-            key="security_release",
-        )
-
-        request = pending[
-            pending["request_id"] == request_id
-        ].iloc[0]
-
-        display_request(request)
-
-        drivers = data["Drivers"]
-
-        drivers = drivers[
-            drivers["active"]
-            .str.strip()
-            .str.lower()
-            .isin(
-                ["yes", "true", "1", "active"]
-            )
-        ]
-
-        if drivers.empty:
-
-            st.error(
-                "No active drivers found."
+        for _, row in pending.iterrows():
+            request_id = str(
+                row.get("request_id", "")
             )
 
-        else:
-
-            driver_username = st.selectbox(
-                "Assign Driver",
-                drivers[
-                    "driver_username"
-                ].tolist(),
-                format_func=lambda x:
-                    drivers[
-                        drivers[
-                            "driver_username"
-                        ] == x
-                    ].iloc[0][
-                        "driver_name"
-                    ],
-            )
-
-            if st.button(
-                "🚐 Verify & Release Vehicle",
-                type="primary",
+            with st.expander(
+                (
+                    f"{request_id} — "
+                    f"{row.get('requisitioner_name', '')} — "
+                    f"{row.get('department', '')}"
+                )
             ):
+                col1, col2 = st.columns(2)
 
-                driver = drivers[
-                    drivers["driver_username"]
-                    == driver_username
-                ].iloc[0]
+                with col1:
+                    st.write(
+                        f"**Destination:** {row.get('destination', '')}"
+                    )
+                    st.write(
+                        f"**Purpose:** {row.get('purpose', '')}"
+                    )
+                    st.write(
+                        f"**Date:** {row.get('travel_date', '')}"
+                    )
+                    st.write(
+                        f"**Time:** {row.get('start_time', '')} - "
+                        f"{row.get('end_time', '')}"
+                    )
 
-                update_record(
-                    "GatePasses",
-                    "request_id",
-                    request_id,
-                    {
-                        "driver_username":
-                            driver[
-                                "driver_username"
-                            ],
+                with col2:
+                    st.write(
+                        f"**Vehicle:** {row.get('vehicle_number', '')}"
+                    )
+                    st.write(
+                        f"**Fixed Driver:** {row.get('driver_name', '')}"
+                    )
+                    st.success(
+                        "Department Manager: Approved"
+                    )
 
-                        "driver_name":
-                            driver[
-                                "driver_name"
-                            ],
-
-                        "security_name":
-                            user["name"],
-
-                        "security_released_at":
-                            datetime.now().strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            ),
-
-                        "status":
-                            "Vehicle Released",
-                    },
+                reason = st.text_input(
+                    "HR remarks / rejection reason",
+                    key=f"hr_reason_{request_id}",
                 )
 
-                add_audit(
-                    request_id,
-                    user,
-                    "SECURITY_RELEASED",
-                    driver["driver_name"],
-                )
+                col_a, col_b = st.columns(2)
 
-                st.success(
-                    "Vehicle released."
-                )
+                with col_a:
+                    if st.button(
+                        "HR Approve",
+                        key=f"hr_approve_{request_id}",
+                    ):
+                        update_request(
+                            request_id,
+                            {
+                                "status": "Pending Security",
+                                "hr_decision": "Approved",
+                                "hr_approved_by": username,
+                                "hr_approved_at": now_str(),
+                            },
+                        )
 
-                st.rerun()
+                        audit(
+                            request_id,
+                            username,
+                            "HR Manager",
+                            "HR Approved",
+                            reason,
+                        )
 
-    # ========================================================
-    # FINAL TRIP VERIFICATION
-    # ========================================================
+                        st.success(
+                            "Request approved and sent to Security."
+                        )
+                        st.rerun()
+
+                with col_b:
+                    if st.button(
+                        "HR Reject",
+                        key=f"hr_reject_{request_id}",
+                    ):
+                        update_request(
+                            request_id,
+                            {
+                                "status": "Rejected by HR",
+                                "hr_decision": "Rejected",
+                                "hr_approved_by": username,
+                                "hr_approved_at": now_str(),
+                                "rejection_reason": reason,
+                            },
+                        )
+
+                        audit(
+                            request_id,
+                            username,
+                            "HR Manager",
+                            "HR Rejected",
+                            reason,
+                        )
+
+                        st.warning(
+                            "Request rejected."
+                        )
+                        st.rerun()
 
     st.divider()
 
     st.subheader(
-        "Completed Trips Awaiting Verification"
+        "Recent Vehicle Requests"
     )
 
-    completed = data[
-        "GatePasses"
-    ][
-        data["GatePasses"]["status"]
+    st.dataframe(
+        dataframe.tail(30),
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# SECURITY
+# ============================================================
+
+def security_portal():
+    username = st.session_state.get(
+        "username",
+        "",
+    )
+
+    st.header("🛡️ Security")
+
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info(
+            "No vehicle requests found."
+        )
+        return
+
+    st.subheader(
+        "Approved Requests Awaiting Vehicle Release"
+    )
+
+    pending_release = dataframe[
+        dataframe["status"].astype(str)
+        == "Pending Security"
+    ]
+
+    if pending_release.empty:
+        st.info(
+            "No approved requests are awaiting release."
+        )
+
+    else:
+        for _, row in pending_release.iterrows():
+            request_id = str(
+                row.get("request_id", "")
+            )
+
+            with st.expander(
+                (
+                    f"{request_id} — "
+                    f"{row.get('requisitioner_name', '')} — "
+                    f"{row.get('vehicle_number', '')}"
+                )
+            ):
+                st.write(
+                    f"**Employee:** {row.get('requisitioner_name', '')}"
+                )
+                st.write(
+                    f"**Department:** {row.get('department', '')}"
+                )
+                st.write(
+                    f"**Destination:** {row.get('destination', '')}"
+                )
+                st.write(
+                    f"**Purpose:** {row.get('purpose', '')}"
+                )
+                st.write(
+                    f"**Date:** {row.get('travel_date', '')}"
+                )
+                st.write(
+                    f"**Time:** {row.get('start_time', '')} - "
+                    f"{row.get('end_time', '')}"
+                )
+                st.write(
+                    f"**Vehicle:** {row.get('vehicle_number', '')}"
+                )
+                st.write(
+                    f"**Fixed Driver:** {row.get('driver_name', '')}"
+                )
+
+                st.success(
+                    "Department Manager: Approved"
+                )
+                st.success(
+                    "HR: Approved"
+                )
+
+                st.info(
+                    "Security does not assign the vehicle or driver. "
+                    "Both are already defined by the approved request."
+                )
+
+                if st.button(
+                    "Verify & Release Vehicle",
+                    key=f"security_release_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Vehicle Released",
+                            "security_released_by": username,
+                            "security_released_at": now_str(),
+                        },
+                    )
+
+                    audit(
+                        request_id,
+                        username,
+                        "Security",
+                        "Vehicle Released",
+                        (
+                            f"Vehicle {row.get('vehicle_number', '')}; "
+                            f"fixed driver {row.get('driver_name', '')}"
+                        ),
+                    )
+
+                    st.success(
+                        "Vehicle released. "
+                        "The assigned driver can now start the trip."
+                    )
+                    st.rerun()
+
+    st.divider()
+
+    st.subheader(
+        "Trips Awaiting Final Security Verification"
+    )
+
+    completed_by_driver = dataframe[
+        dataframe["status"].astype(str)
         == "Pending Security Verification"
     ]
 
-    if completed.empty:
-
+    if completed_by_driver.empty:
         st.info(
-            "No completed trips waiting for verification."
+            "No trips are awaiting final verification."
         )
 
-        return
-
-    request_id = st.selectbox(
-        "Select Completed Trip",
-        completed["request_id"].tolist(),
-        key="security_completed",
-    )
-
-    request = completed[
-        completed["request_id"] == request_id
-    ].iloc[0]
-
-    display_request(request)
-
-    st.write(
-        f"**Start Mileage:** "
-        f"{request['start_mileage']}"
-    )
-
-    st.write(
-        f"**End Mileage:** "
-        f"{request['end_mileage']}"
-    )
-
-    try:
-
-        start = float(
-            request["start_mileage"]
-        )
-
-        end = float(
-            request["end_mileage"]
-        )
-
-        if end >= start:
-
-            st.metric(
-                "Distance Travelled",
-                f"{end - start:.1f}",
+    else:
+        for _, row in completed_by_driver.iterrows():
+            request_id = str(
+                row.get("request_id", "")
             )
 
-    except Exception:
-
-        pass
-
-    notes = st.text_area(
-        "Security Verification Notes"
-    )
-
-    if st.button(
-        "✅ Verify & Approve Trip",
-        type="primary",
-    ):
-
-        update_record(
-            "GatePasses",
-            "request_id",
-            request_id,
-            {
-                "security_verified_at":
-                    datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-
-                "security_name":
-                    user["name"],
-
-                "security_notes":
-                    notes,
-
-                "status":
-                    "Trip Completed - Security Approved",
-            },
-        )
-
-        add_audit(
-            request_id,
-            user,
-            "SECURITY_FINAL_APPROVAL",
-            notes,
-        )
-
-        st.success(
-            "Trip verified and approved."
-        )
-
-        st.rerun()
-
-
-# ============================================================
-# DRIVER LOGIN
-# ============================================================
-
-def driver_login():
-
-    st.title(
-        "🚐 Driver Login"
-    )
-
-    data = load_data()
-
-    username = st.text_input(
-        "Driver Username"
-    )
-
-    password = st.text_input(
-        "Driver Password",
-        type="password",
-    )
-
-    if st.button(
-        "Login",
-        type="primary",
-    ):
-
-        drivers = data["Drivers"]
-
-        matches = drivers[
-            (
-                drivers["driver_username"].str.strip()
-                == username.strip()
-            )
-            &
-            (
-                drivers["active"]
-                .str.strip()
-                .str.lower()
-                .isin(
-                    ["yes", "true", "1", "active"]
+            with st.expander(
+                (
+                    f"{request_id} — "
+                    f"{row.get('vehicle_number', '')} — "
+                    f"{row.get('driver_name', '')}"
                 )
-            )
-        ]
+            ):
+                st.write(
+                    f"**Vehicle:** {row.get('vehicle_number', '')}"
+                )
+                st.write(
+                    f"**Fixed Driver:** {row.get('driver_name', '')}"
+                )
+                st.write(
+                    f"**Start Mileage:** {row.get('start_mileage', '')} km"
+                )
+                st.write(
+                    f"**End Mileage:** {row.get('end_mileage', '')} km"
+                )
+                st.write(
+                    f"**Distance:** {row.get('distance_km', '')} km"
+                )
 
-        if matches.empty:
+                remarks = st.text_input(
+                    "Verification remarks",
+                    key=f"security_verify_reason_{request_id}",
+                )
 
-            st.error(
-                "Driver not found or inactive."
-            )
+                if st.button(
+                    "Verify & Close Trip",
+                    key=f"security_verify_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Completed",
+                            "security_verified_by": username,
+                            "security_verified_at": now_str(),
+                        },
+                    )
 
-            return
+                    audit(
+                        request_id,
+                        username,
+                        "Security",
+                        "Trip Verified and Closed",
+                        remarks,
+                    )
 
-        driver = matches.iloc[0]
-
-        if password != driver[
-            "driver_password"
-        ]:
-
-            st.error(
-                "Invalid driver password."
-            )
-
-            return
-
-        st.session_state.user = {
-            "role":
-                "Driver",
-
-            "username":
-                driver["driver_username"],
-
-            "name":
-                driver["driver_name"],
-        }
-
-        st.rerun()
+                    st.success(
+                        "Trip verified and closed."
+                    )
+                    st.rerun()
 
 
 # ============================================================
-# DRIVER PORTAL
+# DRIVER
 # ============================================================
 
 def driver_portal():
-
-    st.title(
-        "🚐 Driver Portal"
+    username = st.session_state.get(
+        "username",
+        "",
     )
 
-    user = st.session_state.user
-
-    st.write(
-        f"Driver: **{user['name']}**"
+    user = st.session_state.get(
+        "user",
+        {},
     )
 
-    data = load_data()
+    st.header("🚐 Driver Portal")
 
-    assigned = data[
-        "GatePasses"
-    ][
-        (
-            data["GatePasses"]["driver_username"]
-            == user["username"]
+    st.caption(
+        f"Driver: {user.get('driver_name', username)}"
+    )
+
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info(
+            "No assigned trips."
         )
-        &
+        return
+
+    assigned = dataframe[
         (
-            data["GatePasses"]["status"].isin(
+            dataframe["driver_username"]
+            .astype(str)
+            .str.strip()
+            == username
+        )
+        & (
+            dataframe["status"]
+            .astype(str)
+            .isin(
                 [
                     "Vehicle Released",
                     "Trip In Progress",
+                    "Pending Security Verification",
                 ]
             )
         )
     ]
 
     if assigned.empty:
-
         st.success(
-            "No active trips assigned to you."
+            "No active assigned trips."
         )
-
         return
 
-    request_id = st.selectbox(
-        "Assigned Trip",
-        assigned["request_id"].tolist(),
-    )
-
-    request = assigned[
-        assigned["request_id"] == request_id
-    ].iloc[0]
-
-    display_request(request)
-
-    # ========================================================
-    # START TRIP
-    # ========================================================
-
-    if request["status"] == "Vehicle Released":
-
-        st.subheader(
-            "Start Trip"
+    for _, row in assigned.iterrows():
+        request_id = str(
+            row.get("request_id", "")
         )
 
-        start_mileage = st.number_input(
-            "Starting Mileage",
-            min_value=0.0,
-            step=0.1,
+        status = str(
+            row.get("status", "")
         )
 
-        if st.button(
-            "▶️ Record Starting Mileage",
-            type="primary",
+        with st.expander(
+            (
+                f"{request_id} — "
+                f"{row.get('vehicle_number', '')} — "
+                f"{row.get('travel_date', '')}"
+            )
         ):
-
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "start_mileage":
-                        start_mileage,
-
-                    "driver_started_at":
-                        datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-
-                    "status":
-                        "Trip In Progress",
-                },
+            st.write(
+                f"**Vehicle:** {row.get('vehicle_number', '')}"
+            )
+            st.write(
+                f"**Destination:** {row.get('destination', '')}"
+            )
+            st.write(
+                f"**Purpose:** {row.get('purpose', '')}"
+            )
+            st.write(
+                f"**Departure:** {row.get('start_time', '')}"
+            )
+            st.write(
+                f"**Return:** {row.get('end_time', '')}"
+            )
+            st.write(
+                f"**Status:** {status}"
             )
 
-            add_audit(
-                request_id,
-                user,
-                "DRIVER_STARTED",
-                str(start_mileage),
-            )
-
-            st.success(
-                "Starting mileage recorded."
-            )
-
-            st.rerun()
-
-    # ========================================================
-    # END TRIP
-    # ========================================================
-
-    else:
-
-        st.subheader(
-            "Complete Trip"
-        )
-
-        try:
-
-            start_mileage = float(
-                request["start_mileage"]
-            )
-
-        except Exception:
-
-            start_mileage = 0.0
-
-        end_mileage = st.number_input(
-            "Ending Mileage",
-            min_value=start_mileage,
-            value=start_mileage,
-            step=0.1,
-        )
-
-        if st.button(
-            "⏹️ Record Ending Mileage",
-            type="primary",
-        ):
-
-            if end_mileage < start_mileage:
-
-                st.error(
-                    "Ending mileage cannot be "
-                    "less than starting mileage."
+            if status == "Vehicle Released":
+                start_mileage = st.number_input(
+                    "Starting mileage (km)",
+                    min_value=0.0,
+                    step=1.0,
+                    key=f"start_mileage_{request_id}",
                 )
 
-                return
+                if st.button(
+                    "Start Trip",
+                    key=f"start_trip_{request_id}",
+                ):
+                    if start_mileage <= 0:
+                        st.error(
+                            "Please enter the starting mileage."
+                        )
+                    else:
+                        update_request(
+                            request_id,
+                            {
+                                "status": "Trip In Progress",
+                                "start_mileage": start_mileage,
+                                "driver_started_at": now_str(),
+                            },
+                        )
 
-            update_record(
-                "GatePasses",
-                "request_id",
-                request_id,
-                {
-                    "end_mileage":
-                        end_mileage,
+                        audit(
+                            request_id,
+                            username,
+                            "Driver",
+                            "Trip Started",
+                            f"Start mileage: {start_mileage} km",
+                        )
 
-                    "driver_completed_at":
-                        datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
+                        st.success(
+                            "Trip started."
+                        )
+                        st.rerun()
 
-                    "status":
-                        "Pending Security Verification",
-                },
-            )
+            elif status == "Trip In Progress":
+                try:
+                    start_value = float(
+                        row.get(
+                            "start_mileage",
+                            0,
+                        )
+                    )
+                except (ValueError, TypeError):
+                    start_value = 0.0
 
-            add_audit(
-                request_id,
-                user,
-                "DRIVER_COMPLETED",
-                str(end_mileage),
-            )
+                st.info(
+                    f"Recorded starting mileage: "
+                    f"{start_value:g} km"
+                )
 
-            st.success(
-                "Trip completed. Waiting for Security verification."
-            )
+                end_mileage = st.number_input(
+                    "Ending mileage (km)",
+                    min_value=start_value,
+                    step=1.0,
+                    key=f"end_mileage_{request_id}",
+                )
 
-            st.rerun()
+                if st.button(
+                    "Complete Trip",
+                    key=f"complete_trip_{request_id}",
+                ):
+                    if end_mileage < start_value:
+                        st.error(
+                            "Ending mileage cannot be less "
+                            "than starting mileage."
+                        )
+                    else:
+                        distance = (
+                            end_mileage
+                            - start_value
+                        )
+
+                        update_request(
+                            request_id,
+                            {
+                                "status": "Pending Security Verification",
+                                "end_mileage": end_mileage,
+                                "distance_km": distance,
+                                "driver_completed_at": now_str(),
+                            },
+                        )
+
+                        audit(
+                            request_id,
+                            username,
+                            "Driver",
+                            "Trip Completed",
+                            (
+                                f"End mileage: {end_mileage} km; "
+                                f"Distance: {distance:g} km"
+                            ),
+                        )
+
+                        st.success(
+                            "Trip completed and sent to Security "
+                            "for verification."
+                        )
+                        st.rerun()
+
+            else:
+                st.success(
+                    "Trip completed by driver and is "
+                    "waiting for Security verification."
+                )
+
+                st.write(
+                    f"Start mileage: "
+                    f"{row.get('start_mileage', '')} km"
+                )
+                st.write(
+                    f"End mileage: "
+                    f"{row.get('end_mileage', '')} km"
+                )
+                st.write(
+                    f"Distance: "
+                    f"{row.get('distance_km', '')} km"
+                )
 
 
 # ============================================================
-# ADMIN LOGIN
-# ============================================================
-
-def admin_login():
-
-    st.title(
-        "⚙️ Administration Login"
-    )
-
-    password = st.text_input(
-        "Administration Password",
-        type="password",
-    )
-
-    if st.button(
-        "Login",
-        type="primary",
-    ):
-
-        expected = st.secrets.get(
-            "admin_password",
-            "",
-        )
-
-        if password == expected:
-
-            st.session_state.user = {
-                "role":
-                    "Administration",
-
-                "username":
-                    "admin",
-
-                "name":
-                    "Administrator",
-            }
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "Invalid administration password."
-            )
-
-
-# ============================================================
-# ADMIN DASHBOARD
+# ADMINISTRATION
 # ============================================================
 
 def admin_portal():
+    st.header("⚙️ Administration")
 
-    st.title(
-        "⚙️ Administration Dashboard"
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info(
+            "No vehicle gate-pass records yet."
+        )
+        return
+
+    st.metric(
+        "Total Requests",
+        len(dataframe),
     )
-
-    data = load_data()
-
-    requests = data["GatePasses"]
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric(
-        "Total Requests",
-        len(requests),
-    )
-
-    col2.metric(
-        "Pending Manager",
-        len(
-            requests[
-                requests["status"]
-                == "Pending Department Manager"
-            ]
-        ),
-    )
-
-    col3.metric(
-        "Pending HR",
-        len(
-            requests[
-                requests["status"]
-                == "Pending HR"
-            ]
-        ),
-    )
-
-    col4.metric(
-        "Pending Security",
-        len(
-            requests[
-                requests["status"]
-                == "Pending Security"
-            ]
-        ),
-    )
-
-    st.divider()
-
-    st.subheader(
-        "Vehicle Requests"
-    )
-
-    if requests.empty:
-
-        st.info(
-            "No requests yet."
+    with col1:
+        st.metric(
+            "Pending Manager",
+            int(
+                (
+                    dataframe["status"]
+                    == "Pending Department Manager"
+                ).sum()
+            ),
         )
 
-    else:
-
-        st.dataframe(
-            requests,
-            use_container_width=True,
-            hide_index=True,
+    with col2:
+        st.metric(
+            "Pending HR",
+            int(
+                (
+                    dataframe["status"]
+                    == "Pending HR"
+                ).sum()
+            ),
         )
 
-    st.divider()
+    with col3:
+        st.metric(
+            "Pending Security",
+            int(
+                (
+                    dataframe["status"]
+                    == "Pending Security"
+                ).sum()
+            ),
+        )
+
+    with col4:
+        st.metric(
+            "Completed",
+            int(
+                (
+                    dataframe["status"]
+                    == "Completed"
+                ).sum()
+            ),
+        )
 
     st.subheader(
-        "Departments"
+        "All Gate Pass Records"
     )
 
     st.dataframe(
-        data["Departments"],
+        dataframe,
         use_container_width=True,
-        hide_index=True,
+        height=500,
     )
 
     st.subheader(
-        "Drivers"
+        "Vehicle Master"
     )
 
     st.dataframe(
-        data["Drivers"],
+        get_vehicles(),
         use_container_width=True,
-        hide_index=True,
     )
 
     st.subheader(
-        "Vehicles"
+        "Driver Master"
     )
 
+    drivers_view = get_drivers().copy()
+
+    if "password" in drivers_view.columns:
+        drivers_view = drivers_view.drop(
+            columns=["password"]
+        )
+
     st.dataframe(
-        data["Vehicles"],
+        drivers_view,
         use_container_width=True,
-        hide_index=True,
     )
 
     st.subheader(
-        "Approval Audit"
+        "Department Managers"
     )
 
+    departments_view = get_departments().copy()
+
+    if "manager_password" in departments_view.columns:
+        departments_view = departments_view.drop(
+            columns=["manager_password"]
+        )
+
     st.dataframe(
-        data["ApprovalAudit"],
+        departments_view,
         use_container_width=True,
-        hide_index=True,
+    )
+
+    st.subheader(
+        "System Users"
+    )
+
+    users_view = get_users().copy()
+
+    if "password" in users_view.columns:
+        users_view = users_view.drop(
+            columns=["password"]
+        )
+
+    st.dataframe(
+        users_view,
+        use_container_width=True,
     )
 
 
 # ============================================================
-# SESSION STATE
+# GOOGLE SHEET INITIALIZATION
 # ============================================================
 
-if "user" not in st.session_state:
-
-    st.session_state.user = None
+def ensure_sheets():
+    """
+    Creates missing worksheet tabs only.
+    It never creates a local Excel file.
+    """
+    for name in SHEET_HEADERS:
+        get_or_create_worksheet(name)
 
 
 # ============================================================
-# TEST GOOGLE CONNECTION
+# MAIN
 # ============================================================
 
-try:
-
-    get_spreadsheet()
-
-except Exception as error:
-
-    st.error(
-        "❌ Google Sheets connection failed."
+def main():
+    st.title(
+        "🚐 Vehicle Gate Pass Management System"
     )
 
-    st.warning(
-        "Check your Streamlit Secrets and make sure "
-        "the Google Sheet is shared with the "
-        "service-account email."
+    st.caption(
+        "Digital vehicle requisition, multi-level approval, "
+        "fixed vehicle-driver assignment, mileage recording "
+        "and security verification."
     )
 
-    with st.expander(
-        "Technical Error"
-    ):
+    try:
+        ensure_sheets()
 
+    except Exception as error:
+        st.error(
+            "Unable to connect to Google Sheets."
+        )
         st.exception(error)
+        st.stop()
 
-    st.stop()
+    if st.session_state.get("logged_in"):
+        role = st.session_state.get(
+            "role",
+            "",
+        )
 
+        with st.sidebar:
+            st.success(
+                f"Logged in: "
+                f"{st.session_state.get('username', '')}"
+            )
 
-# ============================================================
-# LOGGED-IN USER
-# ============================================================
+            st.write(
+                f"Role: **{role}**"
+            )
 
-if st.session_state.user:
+            if st.button("Logout"):
+                logout()
 
-    user = st.session_state.user
+        if role == "Employee / Requisitioner":
+            employee_portal()
 
-    st.sidebar.success(
-        f"👤 {user['name']}\n\n"
-        f"Role: {user['role']}"
-    )
+        elif role == "Department Manager":
+            manager_portal()
 
-    if st.sidebar.button(
-        "🚪 Logout"
-    ):
+        elif role == "HR Manager":
+            hr_portal()
 
-        st.session_state.user = None
+        elif role == "Security":
+            security_portal()
 
-        st.rerun()
+        elif role == "Driver":
+            driver_portal()
 
-    if user["role"] == "Department Manager":
+        elif role == "Administration":
+            admin_portal()
 
-        manager_portal()
+        else:
+            st.error(
+                "Unknown role."
+            )
 
-    elif user["role"] == "HR Manager":
+        return
 
-        hr_portal()
-
-    elif user["role"] == "Security":
-
-        security_portal()
-
-    elif user["role"] == "Driver":
-
-        driver_portal()
-
-    elif user["role"] == "Administration":
-
-        admin_portal()
-
-
-# ============================================================
-# LOGIN / PORTAL SELECTION
-# ============================================================
-
-else:
-
-    st.sidebar.title(
-        "🚐 Vehicle Gate Pass"
-    )
-
-    portal = st.sidebar.radio(
+    role = st.radio(
         "Select Portal",
-        [
-            "Employee / Requisitioner",
-            "Department Manager",
-            "HR Manager",
-            "Security",
-            "Driver",
-            "Administration",
-        ],
+        ROLES,
+        index=0,
     )
 
-    if portal == "Employee / Requisitioner":
-
+    if role == "Employee / Requisitioner":
         employee_portal()
+    else:
+        login_portal(role)
 
-    elif portal == "Department Manager":
 
-        manager_login()
-
-    elif portal == "HR Manager":
-
-        hr_login()
-
-    elif portal == "Security":
-
-        security_login()
-
-    elif portal == "Driver":
-
-        driver_login()
-
-    elif portal == "Administration":
-
-        admin_login()
+if __name__ == "__main__":
+    main()
