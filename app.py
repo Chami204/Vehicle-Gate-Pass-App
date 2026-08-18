@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -29,7 +29,7 @@ GOOGLE_SHEET_NAME = st.secrets.get(
 
 
 # ============================================================
-# REQUIRED GOOGLE SHEET TABS AND COLUMNS
+# GOOGLE SHEETS STRUCTURE
 # ============================================================
 
 SHEET_COLUMNS = {
@@ -107,9 +107,35 @@ SHEET_COLUMNS = {
 @st.cache_resource
 def get_google_credentials():
 
-    service_account_info = dict(
-        st.secrets["google_service_account"]
-    )
+    # IMPORTANT:
+    # Your Streamlit secrets are at the TOP LEVEL.
+    #
+    # Therefore we use:
+    # st.secrets["project_id"]
+    #
+    # NOT:
+    # st.secrets["google_service_account"]
+
+    service_account_info = {
+        "type": st.secrets["type"],
+        "project_id": st.secrets["project_id"],
+        "private_key_id": st.secrets["private_key_id"],
+        "private_key": st.secrets["private_key"],
+        "client_email": st.secrets["client_email"],
+        "client_id": st.secrets["client_id"],
+        "auth_uri": st.secrets["auth_uri"],
+        "token_uri": st.secrets["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets[
+            "auth_provider_x509_cert_url"
+        ],
+        "client_x509_cert_url": st.secrets[
+            "client_x509_cert_url"
+        ],
+        "universe_domain": st.secrets.get(
+            "universe_domain",
+            "googleapis.com"
+        ),
+    }
 
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -141,7 +167,7 @@ def get_spreadsheet():
 
 
 # ============================================================
-# GOOGLE SHEET ACCESS
+# GOOGLE SHEET FUNCTIONS
 # ============================================================
 
 def get_worksheet(sheet_name):
@@ -170,16 +196,15 @@ def read_sheet(sheet_name):
 
     rows = values[1:]
 
-    # Make sure rows have the same number of
-    # columns as headers.
-
     normalized_rows = []
 
     for row in rows:
 
+        row = list(row)
+
         if len(row) < len(headers):
 
-            row = row + (
+            row.extend(
                 [""] * (
                     len(headers) - len(row)
                 )
@@ -196,15 +221,11 @@ def read_sheet(sheet_name):
         columns=headers,
     )
 
-    # Make sure required columns exist.
-
     for column in expected_columns:
 
         if column not in df.columns:
 
             df[column] = ""
-
-    # Keep expected order.
 
     df = df[expected_columns]
 
@@ -214,20 +235,18 @@ def read_sheet(sheet_name):
 def load_data():
 
     return {
-        sheet_name:
-            read_sheet(sheet_name)
-        for sheet_name
-        in SHEET_COLUMNS
+        name: read_sheet(name)
+        for name in SHEET_COLUMNS
     }
 
 
-def clear_cache():
+def clear_data_cache():
 
     read_sheet.clear()
 
 
 # ============================================================
-# GOOGLE SHEET WRITE FUNCTIONS
+# WRITE DATA
 # ============================================================
 
 def append_record(
@@ -235,21 +254,12 @@ def append_record(
     record,
 ):
 
-    worksheet = get_worksheet(
-        sheet_name
-    )
+    worksheet = get_worksheet(sheet_name)
 
-    columns = SHEET_COLUMNS[
-        sheet_name
-    ]
+    columns = SHEET_COLUMNS[sheet_name]
 
     row = [
-        str(
-            record.get(
-                column,
-                "",
-            )
-        )
+        str(record.get(column, ""))
         for column in columns
     ]
 
@@ -258,7 +268,7 @@ def append_record(
         value_input_option="USER_ENTERED",
     )
 
-    clear_cache()
+    clear_data_cache()
 
 
 def update_record(
@@ -268,9 +278,7 @@ def update_record(
     changes,
 ):
 
-    worksheet = get_worksheet(
-        sheet_name
-    )
+    worksheet = get_worksheet(sheet_name)
 
     values = worksheet.get_all_values()
 
@@ -284,9 +292,7 @@ def update_record(
 
         return False
 
-    key_index = headers.index(
-        key_column
-    )
+    key_index = headers.index(key_column)
 
     target_row = None
 
@@ -299,12 +305,9 @@ def update_record(
 
             continue
 
-        if str(
-            row[key_index]
-        ) == str(key_value):
+        if str(row[key_index]).strip() == str(key_value).strip():
 
             target_row = row_number
-
             break
 
     if target_row is None:
@@ -317,10 +320,7 @@ def update_record(
 
             continue
 
-        column_number = (
-            headers.index(column)
-            + 1
-        )
+        column_number = headers.index(column) + 1
 
         worksheet.update_cell(
             target_row,
@@ -328,13 +328,13 @@ def update_record(
             str(value),
         )
 
-    clear_cache()
+    clear_data_cache()
 
     return True
 
 
 # ============================================================
-# AUDIT LOG
+# AUDIT
 # ============================================================
 
 def add_audit(
@@ -347,12 +347,9 @@ def add_audit(
     append_record(
         "ApprovalAudit",
         {
-
             "audit_id":
                 "AUD-"
-                + uuid.uuid4()
-                .hex[:8]
-                .upper(),
+                + uuid.uuid4().hex[:8].upper(),
 
             "request_id":
                 request_id,
@@ -363,22 +360,13 @@ def add_audit(
                 ),
 
             "actor_username":
-                user.get(
-                    "username",
-                    "",
-                ),
+                user.get("username", ""),
 
             "actor_name":
-                user.get(
-                    "name",
-                    "",
-                ),
+                user.get("name", ""),
 
             "actor_role":
-                user.get(
-                    "role",
-                    "",
-                ),
+                user.get("role", ""),
 
             "action":
                 action,
@@ -390,7 +378,7 @@ def add_audit(
 
 
 # ============================================================
-# TIME SLOT GENERATION
+# TIME FUNCTIONS
 # ============================================================
 
 def generate_time_slots():
@@ -420,36 +408,29 @@ def generate_time_slots():
     return slots
 
 
-# ============================================================
-# DATE/TIME CONVERSION
-# ============================================================
-
 def make_datetime(
     date_value,
     time_value,
 ):
 
-    if isinstance(
-        date_value,
-        date,
-    ):
+    if isinstance(date_value, date):
 
-        d = date_value
+        actual_date = date_value
 
     else:
 
-        d = pd.to_datetime(
+        actual_date = pd.to_datetime(
             date_value
         ).date()
 
-    t = datetime.strptime(
+    actual_time = datetime.strptime(
         str(time_value),
         "%H:%M",
     ).time()
 
     return datetime.combine(
-        d,
-        t,
+        actual_date,
+        actual_time,
     )
 
 
@@ -493,6 +474,7 @@ def vehicle_is_available(
         "Rejected by Manager",
         "Rejected by HR",
         "Cancelled",
+        "Trip Completed - Security Approved",
     }
 
     for _, booking in bookings.iterrows():
@@ -512,10 +494,7 @@ def vehicle_is_available(
 
             continue
 
-        if (
-            booking["status"]
-            in ignored_statuses
-        ):
+        if booking["status"] in ignored_statuses:
 
             continue
 
@@ -534,8 +513,6 @@ def vehicle_is_available(
         except Exception:
 
             continue
-
-        # Overlap test
 
         if (
             requested_start < existing_end
@@ -556,19 +533,18 @@ def get_available_vehicles(
     return_time,
 ):
 
-    vehicles = data["Vehicles"]
+    vehicles = data["Vehicles"].copy()
 
     vehicles = vehicles[
-        (
-            vehicles["vehicle_type"]
-            == vehicle_type
-        )
-        &
-        (
-            vehicles["active"]
-            .str.lower()
-            == "yes"
-        )
+        vehicles["vehicle_type"].str.strip()
+        == str(vehicle_type).strip()
+    ]
+
+    vehicles = vehicles[
+        vehicles["active"]
+        .str.strip()
+        .str.lower()
+        .isin(["yes", "true", "1", "active"])
     ]
 
     available = []
@@ -595,8 +571,58 @@ def get_available_vehicles(
     return available
 
 
+def get_available_departure_times(
+    data,
+    vehicle_type,
+    travel_date,
+    return_date,
+    return_time,
+):
+
+    available_times = []
+
+    for departure_time in generate_time_slots():
+
+        try:
+
+            departure_dt = make_datetime(
+                travel_date,
+                departure_time,
+            )
+
+            return_dt = make_datetime(
+                return_date,
+                return_time,
+            )
+
+            if return_dt <= departure_dt:
+
+                continue
+
+        except Exception:
+
+            continue
+
+        vehicles = get_available_vehicles(
+            data,
+            vehicle_type,
+            travel_date,
+            departure_time,
+            return_date,
+            return_time,
+        )
+
+        if vehicles:
+
+            available_times.append(
+                departure_time
+            )
+
+    return available_times
+
+
 # ============================================================
-# DISPLAY REQUEST
+# REQUEST DISPLAY
 # ============================================================
 
 def display_request(request):
@@ -649,7 +675,8 @@ def display_request(request):
 
         st.write(
             "**Vehicle:**",
-            request["vehicle_number"],
+            request["vehicle_number"]
+            or "Not assigned",
         )
 
         st.write(
@@ -677,7 +704,7 @@ def display_request(request):
 
 
 # ============================================================
-# EMPLOYEE / REQUISITIONER PORTAL
+# EMPLOYEE PORTAL
 # ============================================================
 
 def employee_portal():
@@ -686,33 +713,32 @@ def employee_portal():
         "🚐 Vehicle Gate Pass Request"
     )
 
-    st.info(
-        "Employees can request a vehicle "
-        "without a password."
+    st.caption(
+        "No password is required for vehicle requests."
     )
 
     data = load_data()
 
-    departments = (
-        data["Departments"]
-        ["department"]
-        .dropna()
-        .tolist()
+    departments = sorted(
+        [
+            x for x in
+            data["Departments"]["department"].tolist()
+            if x.strip()
+        ]
     )
 
-    vehicle_types = (
-        data["Vehicles"]
-        ["vehicle_type"]
-        .dropna()
-        .unique()
-        .tolist()
+    vehicle_types = sorted(
+        [
+            x for x in
+            data["Vehicles"]["vehicle_type"].tolist()
+            if x.strip()
+        ]
     )
 
     if not departments:
 
         st.error(
-            "No departments are configured "
-            "in the Departments sheet."
+            "No departments found in the Departments sheet."
         )
 
         return
@@ -720,19 +746,16 @@ def employee_portal():
     if not vehicle_types:
 
         st.error(
-            "No vehicles are configured "
-            "in the Vehicles sheet."
+            "No vehicle types found in the Vehicles sheet."
         )
 
         return
 
-    with st.form(
-        "vehicle_request_form"
-    ):
+    st.subheader(
+        "Request a Vehicle"
+    )
 
-        st.subheader(
-            "Requisition Details"
-        )
+    with st.form("vehicle_request_form"):
 
         col1, col2 = st.columns(2)
 
@@ -761,8 +784,8 @@ def employee_portal():
             "Purpose *"
         )
 
-        st.subheader(
-            "Trip Details"
+        st.markdown(
+            "### Trip Details"
         )
 
         col1, col2 = st.columns(2)
@@ -777,92 +800,81 @@ def employee_portal():
             min_value=date.today(),
         )
 
-        col1, col2 = st.columns(2)
-
         vehicle_type = col1.selectbox(
             "Vehicle Type *",
             vehicle_types,
         )
 
-        departure_time = col2.selectbox(
-            "Departure Time *",
-            generate_time_slots(),
-        )
+        return_times = generate_time_slots()
 
-        departure_dt = make_datetime(
-            travel_date,
-            departure_time,
-        )
-
-        valid_return_times = []
-
-        for slot in generate_time_slots():
-
-            try:
-
-                return_dt = make_datetime(
-                    return_date,
-                    slot,
-                )
-
-                if return_dt > departure_dt:
-
-                    valid_return_times.append(
-                        slot
-                    )
-
-            except Exception:
-
-                pass
-
-        if not valid_return_times:
-
-            valid_return_times = (
-                generate_time_slots()
-            )
-
-        return_time = col1.selectbox(
+        return_time = col2.selectbox(
             "Return Time *",
-            valid_return_times,
+            return_times,
+            index=(
+                return_times.index("17:00")
+                if "17:00" in return_times
+                else 0
+            ),
         )
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # The vehicle list is generated only from vehicles
-        # available for the selected date/time.
+        # ONLY SHOW DEPARTURE TIMES WHERE A VEHICLE EXISTS
         # ----------------------------------------------------
 
-        available_vehicles = (
-            get_available_vehicles(
+        available_departure_times = (
+            get_available_departure_times(
                 data,
                 vehicle_type,
                 travel_date,
-                departure_time,
                 return_date,
                 return_time,
             )
         )
 
-        if available_vehicles:
+        if available_departure_times:
 
-            vehicle_number = col2.selectbox(
-                "Available Vehicle *",
-                available_vehicles,
+            departure_time = st.selectbox(
+                "Available Departure Time *",
+                available_departure_times,
             )
 
-            st.success(
-                f"{len(available_vehicles)} "
-                "vehicle(s) available for "
-                "this time."
+            available_vehicles = (
+                get_available_vehicles(
+                    data,
+                    vehicle_type,
+                    travel_date,
+                    departure_time,
+                    return_date,
+                    return_time,
+                )
             )
+
+            if available_vehicles:
+
+                vehicle_number = st.selectbox(
+                    "Available Vehicle *",
+                    available_vehicles,
+                )
+
+                st.success(
+                    f"{len(available_vehicles)} "
+                    "vehicle(s) available."
+                )
+
+            else:
+
+                vehicle_number = ""
 
         else:
 
+            departure_time = ""
+
             vehicle_number = ""
 
-            col2.error(
-                "No vehicle is available "
-                "for the selected date/time."
+            st.warning(
+                "No vehicles are available for "
+                "the selected date, vehicle type "
+                "and return time."
             )
 
         submitted = st.form_submit_button(
@@ -875,7 +887,7 @@ def employee_portal():
         if not requisitioner.strip():
 
             st.error(
-                "Enter the requisitioner's name."
+                "Please enter the requisitioner's name."
             )
 
             return
@@ -883,7 +895,7 @@ def employee_portal():
         if not destination.strip():
 
             st.error(
-                "Enter the destination."
+                "Please enter the destination."
             )
 
             return
@@ -891,21 +903,31 @@ def employee_portal():
         if not purpose.strip():
 
             st.error(
-                "Enter the purpose."
+                "Please enter the purpose."
             )
 
             return
 
-        if not available_vehicles:
+        if not departure_time:
 
             st.error(
-                "There is no available vehicle "
-                "for this time."
+                "No available departure time."
             )
 
             return
 
-        # Re-check immediately before saving.
+        if not vehicle_number:
+
+            st.error(
+                "No available vehicle."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # RECHECK AVAILABILITY BEFORE SAVING
+        # ----------------------------------------------------
+
         fresh_data = load_data()
 
         if not vehicle_is_available(
@@ -918,31 +940,30 @@ def employee_portal():
         ):
 
             st.error(
-                "The vehicle was just booked by "
-                "another request. Please select "
-                "another available time."
+                "This vehicle was just booked. "
+                "Please select another available time."
             )
 
             st.rerun()
 
-        # Find manager from Departments sheet.
+        # ----------------------------------------------------
+        # FIND DEPARTMENT MANAGER
+        # ----------------------------------------------------
 
         department_rows = fresh_data[
             "Departments"
         ]
 
         manager_rows = department_rows[
-            department_rows[
-                "department"
-            ]
-            == department
+            department_rows["department"].str.strip()
+            == department.strip()
         ]
 
         if manager_rows.empty:
 
             st.error(
-                "No manager has been configured "
-                "for this department."
+                "No manager is configured for "
+                "this department."
             )
 
             return
@@ -951,19 +972,14 @@ def employee_portal():
 
         request_id = (
             "VGP-"
-            + datetime.now().strftime(
-                "%Y%m%d"
-            )
+            + datetime.now().strftime("%Y%m%d")
             + "-"
-            + uuid.uuid4()
-            .hex[:6]
-            .upper()
+            + uuid.uuid4().hex[:6].upper()
         )
 
         append_record(
             "GatePasses",
             {
-
                 "request_id":
                     request_id,
 
@@ -973,22 +989,22 @@ def employee_portal():
                     ),
 
                 "requisitioner":
-                    requisitioner,
+                    requisitioner.strip(),
 
                 "department":
                     department,
 
                 "contact":
-                    contact,
+                    contact.strip(),
 
                 "companions":
-                    companions,
+                    companions.strip(),
 
                 "destination":
-                    destination,
+                    destination.strip(),
 
                 "purpose":
-                    purpose,
+                    purpose.strip(),
 
                 "travel_date":
                     travel_date.strftime(
@@ -1049,7 +1065,11 @@ def employee_portal():
         )
 
         st.success(
-            f"Vehicle request submitted successfully."
+            "Vehicle request submitted successfully."
+        )
+
+        st.markdown(
+            "### Your Request ID"
         )
 
         st.code(
@@ -1057,15 +1077,12 @@ def employee_portal():
         )
 
         st.info(
-            "Keep this Request ID to check "
-            "the status of your request."
+            "Keep this Request ID for tracking."
         )
 
-        st.rerun()
-
-    # --------------------------------------------------------
-    # STATUS LOOKUP
-    # --------------------------------------------------------
+    # ========================================================
+    # REQUEST STATUS
+    # ========================================================
 
     st.divider()
 
@@ -1074,8 +1091,8 @@ def employee_portal():
     )
 
     request_lookup = st.text_input(
-        "Enter Request ID",
-        key="employee_request_lookup",
+        "Request ID",
+        key="request_status_lookup",
     )
 
     if request_lookup.strip():
@@ -1087,24 +1104,19 @@ def employee_portal():
         ][
             current_data[
                 "GatePasses"
-            ]["request_id"]
+            ]["request_id"].str.strip()
             == request_lookup.strip()
         ]
 
         if matches.empty:
 
             st.warning(
-                "Request ID not found."
+                "Request not found."
             )
 
         else:
 
             request = matches.iloc[0]
-
-            st.write(
-                "**Status:**",
-                request["status"],
-            )
 
             display_request(
                 request
@@ -1112,30 +1124,22 @@ def employee_portal():
 
 
 # ============================================================
-# DEPARTMENT MANAGER LOGIN
+# MANAGER LOGIN
 # ============================================================
 
 def manager_login():
-
-    data = load_data()
 
     st.title(
         "👔 Department Manager Login"
     )
 
+    data = load_data()
+
     departments = data[
         "Departments"
     ]
 
-    department_names = (
-        departments[
-            "department"
-        ]
-        .dropna()
-        .tolist()
-    )
-
-    if not department_names:
+    if departments.empty:
 
         st.error(
             "No departments configured."
@@ -1143,27 +1147,18 @@ def manager_login():
 
         return
 
+    department_names = sorted(
+        [
+            x for x in
+            departments["department"].tolist()
+            if x.strip()
+        ]
+    )
+
     department = st.selectbox(
         "Department",
         department_names,
     )
-
-    department_row = departments[
-        departments[
-            "department"
-        ]
-        == department
-    ]
-
-    if department_row.empty:
-
-        st.error(
-            "Department configuration not found."
-        )
-
-        return
-
-    manager = department_row.iloc[0]
 
     username = st.text_input(
         "Manager Username"
@@ -1179,89 +1174,83 @@ def manager_login():
         type="primary",
     ):
 
-        # PASSWORD COMES FROM GOOGLE SHEET.
-        # NOTHING IS STORED IN STREAMLIT SECRETS.
+        matches = departments[
+            (
+                departments["department"].str.strip()
+                == department.strip()
+            )
+            &
+            (
+                departments["manager_username"].str.strip()
+                == username.strip()
+            )
+        ]
 
-        correct_username = str(
-            manager[
-                "manager_username"
-            ]
-        ).strip()
-
-        correct_password = str(
-            manager[
-                "manager_password"
-            ]
-        ).strip()
-
-        if (
-            username.strip()
-            == correct_username
-            and password
-            == correct_password
-        ):
-
-            st.session_state.user = {
-
-                "role":
-                    "Department Manager",
-
-                "username":
-                    correct_username,
-
-                "name":
-                    manager[
-                        "manager_name"
-                    ],
-
-                "department":
-                    manager[
-                        "department"
-                    ],
-            }
-
-            st.rerun()
-
-        else:
+        if matches.empty:
 
             st.error(
-                "Invalid manager username "
-                "or password."
+                "Invalid manager username."
             )
+
+            return
+
+        manager = matches.iloc[0]
+
+        if password != manager[
+            "manager_password"
+        ]:
+
+            st.error(
+                "Invalid manager password."
+            )
+
+            return
+
+        st.session_state.user = {
+            "role":
+                "Department Manager",
+
+            "username":
+                manager["manager_username"],
+
+            "name":
+                manager["manager_name"],
+
+            "department":
+                manager["department"],
+        }
+
+        st.rerun()
 
 
 # ============================================================
-# DEPARTMENT MANAGER PORTAL
+# MANAGER PORTAL
 # ============================================================
 
 def manager_portal():
-
-    data = load_data()
-
-    user = st.session_state.user
 
     st.title(
         "👔 Department Manager Portal"
     )
 
-    st.caption(
-        f"Department: {user['department']}"
+    user = st.session_state.user
+
+    st.write(
+        f"Department: **{user['department']}**"
     )
+
+    data = load_data()
 
     pending = data[
         "GatePasses"
     ][
         (
-            data[
-                "GatePasses"
-            ]["status"]
+            data["GatePasses"]["status"]
             == "Pending Department Manager"
         )
         &
         (
-            data[
-                "GatePasses"
-            ]["manager_username"]
+            data["GatePasses"]["manager_username"]
             == user["username"]
         )
     ]
@@ -1269,30 +1258,21 @@ def manager_portal():
     if pending.empty:
 
         st.success(
-            "There are no pending requests."
+            "No pending vehicle requests."
         )
 
         return
 
     request_id = st.selectbox(
         "Select Request",
-        pending[
-            "request_id"
-        ].tolist(),
+        pending["request_id"].tolist(),
     )
 
     request = pending[
-        pending[
-            "request_id"
-        ]
-        == request_id
+        pending["request_id"] == request_id
     ].iloc[0]
 
-    display_request(
-        request
-    )
-
-    st.divider()
+    display_request(request)
 
     col1, col2 = st.columns(2)
 
@@ -1306,34 +1286,19 @@ def manager_portal():
 
             fresh_data = load_data()
 
-            still_available = (
-                vehicle_is_available(
-                    fresh_data,
-                    request[
-                        "vehicle_number"
-                    ],
-                    request[
-                        "travel_date"
-                    ],
-                    request[
-                        "departure_time"
-                    ],
-                    request[
-                        "return_date"
-                    ],
-                    request[
-                        "return_time"
-                    ],
-                    ignore_request_id=
-                    request_id,
-                )
-            )
-
-            if not still_available:
+            if not vehicle_is_available(
+                fresh_data,
+                request["vehicle_number"],
+                request["travel_date"],
+                request["departure_time"],
+                request["return_date"],
+                request["return_time"],
+                ignore_request_id=request_id,
+            ):
 
                 st.error(
-                    "The vehicle is no longer "
-                    "available for this time."
+                    "The selected vehicle is no longer "
+                    "available."
                 )
 
                 return
@@ -1343,7 +1308,6 @@ def manager_portal():
                 "request_id",
                 request_id,
                 {
-
                     "status":
                         "Pending HR",
 
@@ -1361,7 +1325,7 @@ def manager_portal():
             )
 
             st.success(
-                "Request approved and sent to HR."
+                "Approved. Sent to HR."
             )
 
             st.rerun()
@@ -1374,17 +1338,16 @@ def manager_portal():
         ):
 
             st.session_state[
-                "manager_reject_mode"
+                "manager_reject"
             ] = True
 
     if st.session_state.get(
-        "manager_reject_mode",
+        "manager_reject",
         False,
     ):
 
         reason = st.text_area(
-            "Rejection Reason",
-            key="manager_rejection_reason",
+            "Reason for rejection"
         )
 
         if st.button(
@@ -1395,7 +1358,7 @@ def manager_portal():
             if not reason.strip():
 
                 st.warning(
-                    "Please enter a rejection reason."
+                    "Enter a reason."
                 )
 
                 return
@@ -1405,7 +1368,6 @@ def manager_portal():
                 "request_id",
                 request_id,
                 {
-
                     "status":
                         "Rejected by Manager",
 
@@ -1426,7 +1388,7 @@ def manager_portal():
             )
 
             st.session_state[
-                "manager_reject_mode"
+                "manager_reject"
             ] = False
 
             st.rerun()
@@ -1442,11 +1404,6 @@ def hr_login():
         "👩‍💼 HR Manager Login"
     )
 
-    st.caption(
-        "HR credentials can be configured "
-        "in Streamlit Secrets."
-    )
-
     password = st.text_input(
         "HR Password",
         type="password",
@@ -1457,15 +1414,14 @@ def hr_login():
         type="primary",
     ):
 
-        hr_password = st.secrets.get(
+        expected = st.secrets.get(
             "hr_password",
             "",
         )
 
-        if password == hr_password:
+        if password == expected:
 
             st.session_state.user = {
-
                 "role":
                     "HR Manager",
 
@@ -1491,20 +1447,18 @@ def hr_login():
 
 def hr_portal():
 
-    data = load_data()
-
-    user = st.session_state.user
-
     st.title(
         "👩‍💼 HR Approval"
     )
 
+    user = st.session_state.user
+
+    data = load_data()
+
     pending = data[
         "GatePasses"
     ][
-        data[
-            "GatePasses"
-        ]["status"]
+        data["GatePasses"]["status"]
         == "Pending HR"
     ]
 
@@ -1518,21 +1472,14 @@ def hr_portal():
 
     request_id = st.selectbox(
         "Select Request",
-        pending[
-            "request_id"
-        ].tolist(),
+        pending["request_id"].tolist(),
     )
 
     request = pending[
-        pending[
-            "request_id"
-        ]
-        == request_id
+        pending["request_id"] == request_id
     ].iloc[0]
 
-    display_request(
-        request
-    )
+    display_request(request)
 
     col1, col2 = st.columns(2)
 
@@ -1549,7 +1496,6 @@ def hr_portal():
                 "request_id",
                 request_id,
                 {
-
                     "status":
                         "Pending Security",
 
@@ -1567,7 +1513,7 @@ def hr_portal():
             )
 
             st.success(
-                "HR approval completed."
+                "Approved. Sent to Security."
             )
 
             st.rerun()
@@ -1580,11 +1526,11 @@ def hr_portal():
         ):
 
             st.session_state[
-                "hr_reject_mode"
+                "hr_reject"
             ] = True
 
     if st.session_state.get(
-        "hr_reject_mode",
+        "hr_reject",
         False,
     ):
 
@@ -1600,7 +1546,7 @@ def hr_portal():
             if not reason.strip():
 
                 st.warning(
-                    "Enter a rejection reason."
+                    "Enter a reason."
                 )
 
                 return
@@ -1610,7 +1556,6 @@ def hr_portal():
                 "request_id",
                 request_id,
                 {
-
                     "status":
                         "Rejected by HR",
 
@@ -1631,7 +1576,7 @@ def hr_portal():
             )
 
             st.session_state[
-                "hr_reject_mode"
+                "hr_reject"
             ] = False
 
             st.rerun()
@@ -1657,15 +1602,14 @@ def security_login():
         type="primary",
     ):
 
-        security_password = st.secrets.get(
+        expected = st.secrets.get(
             "security_password",
             "",
         )
 
-        if password == security_password:
+        if password == expected:
 
             st.session_state.user = {
-
                 "role":
                     "Security",
 
@@ -1681,7 +1625,7 @@ def security_login():
         else:
 
             st.error(
-                "Invalid Security password."
+                "Invalid security password."
             )
 
 
@@ -1691,74 +1635,64 @@ def security_login():
 
 def security_portal():
 
-    data = load_data()
-
-    user = st.session_state.user
-
     st.title(
         "🛡️ Security Portal"
     )
 
+    user = st.session_state.user
+
+    data = load_data()
+
     # ========================================================
-    # RELEASE VEHICLES
+    # RELEASE VEHICLE
     # ========================================================
 
     st.subheader(
-        "Approved Requests Awaiting Vehicle Release"
+        "Approved Requests"
     )
 
     pending = data[
         "GatePasses"
     ][
-        data[
-            "GatePasses"
-        ]["status"]
+        data["GatePasses"]["status"]
         == "Pending Security"
     ]
 
     if pending.empty:
 
         st.info(
-            "No requests are waiting for vehicle release."
+            "No requests waiting for Security."
         )
 
     else:
 
         request_id = st.selectbox(
             "Select Request",
-            pending[
-                "request_id"
-            ].tolist(),
-            key="security_release_request",
+            pending["request_id"].tolist(),
+            key="security_release",
         )
 
         request = pending[
-            pending[
-                "request_id"
-            ]
-            == request_id
+            pending["request_id"] == request_id
         ].iloc[0]
 
-        display_request(
-            request
-        )
+        display_request(request)
 
-        drivers = data[
-            "Drivers"
-        ]
+        drivers = data["Drivers"]
 
         drivers = drivers[
-            drivers[
-                "active"
-            ]
+            drivers["active"]
+            .str.strip()
             .str.lower()
-            == "yes"
+            .isin(
+                ["yes", "true", "1", "active"]
+            )
         ]
 
         if drivers.empty:
 
             st.error(
-                "No active drivers are configured."
+                "No active drivers found."
             )
 
         else:
@@ -1768,12 +1702,11 @@ def security_portal():
                 drivers[
                     "driver_username"
                 ].tolist(),
-                format_func=lambda username:
+                format_func=lambda x:
                     drivers[
                         drivers[
                             "driver_username"
-                        ]
-                        == username
+                        ] == x
                     ].iloc[0][
                         "driver_name"
                     ],
@@ -1785,9 +1718,7 @@ def security_portal():
             ):
 
                 driver = drivers[
-                    drivers[
-                        "driver_username"
-                    ]
+                    drivers["driver_username"]
                     == driver_username
                 ].iloc[0]
 
@@ -1796,7 +1727,6 @@ def security_portal():
                     "request_id",
                     request_id,
                     {
-
                         "driver_username":
                             driver[
                                 "driver_username"
@@ -1824,19 +1754,17 @@ def security_portal():
                     request_id,
                     user,
                     "SECURITY_RELEASED",
-                    driver[
-                        "driver_name"
-                    ],
+                    driver["driver_name"],
                 )
 
                 st.success(
-                    "Vehicle released to driver."
+                    "Vehicle released."
                 )
 
                 st.rerun()
 
     # ========================================================
-    # FINAL VERIFICATION
+    # FINAL TRIP VERIFICATION
     # ========================================================
 
     st.divider()
@@ -1848,38 +1776,29 @@ def security_portal():
     completed = data[
         "GatePasses"
     ][
-        data[
-            "GatePasses"
-        ]["status"]
+        data["GatePasses"]["status"]
         == "Pending Security Verification"
     ]
 
     if completed.empty:
 
         st.info(
-            "No completed trips awaiting verification."
+            "No completed trips waiting for verification."
         )
 
         return
 
     request_id = st.selectbox(
         "Select Completed Trip",
-        completed[
-            "request_id"
-        ].tolist(),
-        key="security_completed_request",
+        completed["request_id"].tolist(),
+        key="security_completed",
     )
 
     request = completed[
-        completed[
-            "request_id"
-        ]
-        == request_id
+        completed["request_id"] == request_id
     ].iloc[0]
 
-    display_request(
-        request
-    )
+    display_request(request)
 
     st.write(
         f"**Start Mileage:** "
@@ -1901,12 +1820,12 @@ def security_portal():
             request["end_mileage"]
         )
 
-        distance = end - start
+        if end >= start:
 
-        st.metric(
-            "Distance Travelled",
-            f"{distance:.1f}",
-        )
+            st.metric(
+                "Distance Travelled",
+                f"{end - start:.1f}",
+            )
 
     except Exception:
 
@@ -1926,7 +1845,6 @@ def security_portal():
             "request_id",
             request_id,
             {
-
                 "security_verified_at":
                     datetime.now().strftime(
                         "%Y-%m-%d %H:%M:%S"
@@ -1963,11 +1881,11 @@ def security_portal():
 
 def driver_login():
 
-    data = load_data()
-
     st.title(
         "🚐 Driver Login"
     )
+
+    data = load_data()
 
     username = st.text_input(
         "Driver Username"
@@ -1983,28 +1901,25 @@ def driver_login():
         type="primary",
     ):
 
-        drivers = data[
-            "Drivers"
-        ]
+        drivers = data["Drivers"]
 
-        match = drivers[
+        matches = drivers[
             (
-                drivers[
-                    "driver_username"
-                ]
+                drivers["driver_username"].str.strip()
                 == username.strip()
             )
             &
             (
-                drivers[
-                    "active"
-                ]
+                drivers["active"]
+                .str.strip()
                 .str.lower()
-                == "yes"
+                .isin(
+                    ["yes", "true", "1", "active"]
+                )
             )
         ]
 
-        if match.empty:
+        if matches.empty:
 
             st.error(
                 "Driver not found or inactive."
@@ -2012,42 +1927,30 @@ def driver_login():
 
             return
 
-        driver = match.iloc[0]
+        driver = matches.iloc[0]
 
-        # PASSWORD COMES DIRECTLY FROM
-        # THE DRIVERS GOOGLE SHEET TAB.
-
-        correct_password = str(
-            driver[
-                "driver_password"
-            ]
-        ).strip()
-
-        if password == correct_password:
-
-            st.session_state.user = {
-
-                "role":
-                    "Driver",
-
-                "username":
-                    driver[
-                        "driver_username"
-                    ],
-
-                "name":
-                    driver[
-                        "driver_name"
-                    ],
-            }
-
-            st.rerun()
-
-        else:
+        if password != driver[
+            "driver_password"
+        ]:
 
             st.error(
                 "Invalid driver password."
             )
+
+            return
+
+        st.session_state.user = {
+            "role":
+                "Driver",
+
+            "username":
+                driver["driver_username"],
+
+            "name":
+                driver["driver_name"],
+        }
+
+        st.rerun()
 
 
 # ============================================================
@@ -2056,33 +1959,28 @@ def driver_login():
 
 def driver_portal():
 
-    data = load_data()
-
-    user = st.session_state.user
-
     st.title(
         "🚐 Driver Portal"
     )
 
-    st.caption(
-        f"Logged in as {user['name']}"
+    user = st.session_state.user
+
+    st.write(
+        f"Driver: **{user['name']}**"
     )
+
+    data = load_data()
 
     assigned = data[
         "GatePasses"
     ][
         (
-            data[
-                "GatePasses"
-            ]["driver_username"]
+            data["GatePasses"]["driver_username"]
             == user["username"]
         )
         &
         (
-            data[
-                "GatePasses"
-            ]["status"]
-            .isin(
+            data["GatePasses"]["status"].isin(
                 [
                     "Vehicle Released",
                     "Trip In Progress",
@@ -2101,21 +1999,14 @@ def driver_portal():
 
     request_id = st.selectbox(
         "Assigned Trip",
-        assigned[
-            "request_id"
-        ].tolist(),
+        assigned["request_id"].tolist(),
     )
 
     request = assigned[
-        assigned[
-            "request_id"
-        ]
-        == request_id
+        assigned["request_id"] == request_id
     ].iloc[0]
 
-    display_request(
-        request
-    )
+    display_request(request)
 
     # ========================================================
     # START TRIP
@@ -2134,7 +2025,7 @@ def driver_portal():
         )
 
         if st.button(
-            "▶️ Record Start Mileage",
+            "▶️ Record Starting Mileage",
             type="primary",
         ):
 
@@ -2143,7 +2034,6 @@ def driver_portal():
                 "request_id",
                 request_id,
                 {
-
                     "start_mileage":
                         start_mileage,
 
@@ -2182,29 +2072,27 @@ def driver_portal():
 
         try:
 
-            starting_mileage = float(
-                request[
-                    "start_mileage"
-                ]
+            start_mileage = float(
+                request["start_mileage"]
             )
 
         except Exception:
 
-            starting_mileage = 0.0
+            start_mileage = 0.0
 
         end_mileage = st.number_input(
             "Ending Mileage",
-            min_value=starting_mileage,
-            value=starting_mileage,
+            min_value=start_mileage,
+            value=start_mileage,
             step=0.1,
         )
 
         if st.button(
-            "⏹️ Record End Mileage",
+            "⏹️ Record Ending Mileage",
             type="primary",
         ):
 
-            if end_mileage < starting_mileage:
+            if end_mileage < start_mileage:
 
                 st.error(
                     "Ending mileage cannot be "
@@ -2218,7 +2106,6 @@ def driver_portal():
                 "request_id",
                 request_id,
                 {
-
                     "end_mileage":
                         end_mileage,
 
@@ -2240,15 +2127,14 @@ def driver_portal():
             )
 
             st.success(
-                "End mileage recorded. "
-                "Security verification is now required."
+                "Trip completed. Waiting for Security verification."
             )
 
             st.rerun()
 
 
 # ============================================================
-# ADMINISTRATION LOGIN
+# ADMIN LOGIN
 # ============================================================
 
 def admin_login():
@@ -2267,15 +2153,14 @@ def admin_login():
         type="primary",
     ):
 
-        admin_password = st.secrets.get(
+        expected = st.secrets.get(
             "admin_password",
             "",
         )
 
-        if password == admin_password:
+        if password == expected:
 
             st.session_state.user = {
-
                 "role":
                     "Administration",
 
@@ -2296,59 +2181,51 @@ def admin_login():
 
 
 # ============================================================
-# ADMINISTRATION PORTAL
+# ADMIN DASHBOARD
 # ============================================================
 
 def admin_portal():
-
-    data = load_data()
 
     st.title(
         "⚙️ Administration Dashboard"
     )
 
-    requests = data[
-        "GatePasses"
-    ]
+    data = load_data()
 
-    c1, c2, c3, c4 = st.columns(4)
+    requests = data["GatePasses"]
 
-    c1.metric(
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric(
         "Total Requests",
         len(requests),
     )
 
-    c2.metric(
+    col2.metric(
         "Pending Manager",
         len(
             requests[
-                requests[
-                    "status"
-                ]
+                requests["status"]
                 == "Pending Department Manager"
             ]
         ),
     )
 
-    c3.metric(
+    col3.metric(
         "Pending HR",
         len(
             requests[
-                requests[
-                    "status"
-                ]
+                requests["status"]
                 == "Pending HR"
             ]
         ),
     )
 
-    c4.metric(
+    col4.metric(
         "Pending Security",
         len(
             requests[
-                requests[
-                    "status"
-                ]
+                requests["status"]
                 == "Pending Security"
             ]
         ),
@@ -2363,7 +2240,7 @@ def admin_portal():
     if requests.empty:
 
         st.info(
-            "No vehicle requests yet."
+            "No requests yet."
         )
 
     else:
@@ -2406,6 +2283,16 @@ def admin_portal():
         hide_index=True,
     )
 
+    st.subheader(
+        "Approval Audit"
+    )
+
+    st.dataframe(
+        data["ApprovalAudit"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
 
 # ============================================================
 # SESSION STATE
@@ -2417,30 +2304,27 @@ if "user" not in st.session_state:
 
 
 # ============================================================
-# GOOGLE SHEET CONNECTION TEST
+# TEST GOOGLE CONNECTION
 # ============================================================
 
 try:
-
-    # This also verifies that the service account
-    # can access the Google Sheet.
 
     get_spreadsheet()
 
 except Exception as error:
 
     st.error(
-        "❌ Cannot connect to Google Sheets."
+        "❌ Google Sheets connection failed."
     )
 
     st.warning(
-        "Check your Streamlit Secrets and "
-        "make sure the Google Sheet is shared "
-        "with the service-account email."
+        "Check your Streamlit Secrets and make sure "
+        "the Google Sheet is shared with the "
+        "service-account email."
     )
 
     with st.expander(
-        "Technical error"
+        "Technical Error"
     ):
 
         st.exception(error)
@@ -2491,7 +2375,7 @@ if st.session_state.user:
 
 
 # ============================================================
-# MAIN LOGIN / PORTAL SELECTION
+# LOGIN / PORTAL SELECTION
 # ============================================================
 
 else:
