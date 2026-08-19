@@ -13,6 +13,9 @@ import pandas as pd
 import uuid
 import time as time_module
 from zoneinfo import ZoneInfo
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 st.set_page_config(page_title="Vehicle Gate Pass", page_icon="🚐", layout="wide")
 
@@ -24,7 +27,7 @@ SCOPES = [
 SHEET_NAME = "vehicle_gate_pass_data"
 
 SHEET_HEADERS = {
-    "Users": ["username", "name", "role", "password", "active"],
+    "Users": ["username", "name", "role", "password", "active","email"],
     "Departments": [
         "department", "manager_username", "manager_name",
         "manager_password", "active"
@@ -313,6 +316,73 @@ def get_vehicles():
 
 def get_gatepasses():
     return read_sheet("GatePasses")
+# ============================================================
+# send_email
+# ============================================================
+def send_email(subject, body, recipient):
+
+    try:
+        sender = st.secrets["gmail_sender"]
+        password = st.secrets["gmail_password"]
+
+        message = MIMEMultipart()
+
+        message["From"] = sender
+        message["To"] = recipient
+        message["Subject"] = subject
+
+        message.attach(
+            MIMEText(body, "plain")
+        )
+
+        with smtplib.SMTP(
+            "smtp.gmail.com",
+            587,
+        ) as server:
+
+            server.starttls()
+
+            server.login(
+                sender,
+                password,
+            )
+
+            server.send_message(
+                message
+            )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"Email Error: {e}"
+        )
+        return False
+# ============================================================
+# Allocator Email Lookup Function
+# ============================================================
+def get_allocator_email():
+
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    allocator = users[
+        users["role"].astype(str)
+        == "Vehicle Allocator"
+    ]
+
+    if allocator.empty:
+        return None
+
+    return str(
+        allocator.iloc[0].get(
+            "email",
+            "",
+        )
+    ).strip()
+
 
 
 # ============================================================
@@ -1018,6 +1088,31 @@ def manager_portal():
                             "rejection_reason": reason,
                         },
                     )
+                    allocator_email = get_allocator_email()
+                    
+                    if allocator_email:
+                    
+                        send_email(
+                            subject=(
+                                f"Vehicle Allocation Required - "
+                                f"{request_id}"
+                            ),
+                            body=(
+                                f"A vehicle request is awaiting allocation.\n\n"
+                                f"Request ID: {request_id}\n"
+                                f"Employee: {row.get('requisitioner_name', '')}\n"
+                                f"Department: {row.get('department', '')}\n"
+                                f"Date: {row.get('travel_date', '')}\n"
+                                f"Requested Time: "
+                                f"{row.get('start_time', '')} - "
+                                f"{row.get('end_time', '')}\n\n"
+                                f"Please log in to the Vehicle "
+                                f"Gate Pass System."
+                            ),
+                            recipient=allocator_email,
+                        )
+
+                    
                     audit(
                         request_id,
                         username,
