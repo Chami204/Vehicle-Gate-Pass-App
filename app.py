@@ -1171,8 +1171,8 @@ def vehicle_allocator_portal():
                 f"**Fixed Driver:** "
                 f"{selected_driver.get('driver_name', '') or selected_driver.get('driver_username', '')}\n\n"
                 f"**Confirmed Time:** "
-                f"{requested_start_dt.strftime('%H:%M')} - "
-                f"{calculated_end_dt.strftime('%H:%M')}"
+                f"{allocator_start_dt.strftime('%H:%M')} - "
+                f"{allocator_end_dt.strftime('%H:%M')}"
             )
 
             remarks = st.text_input(
