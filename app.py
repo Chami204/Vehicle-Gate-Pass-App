@@ -1128,7 +1128,7 @@ def vehicle_allocator_portal():
                         "The stored end time does not match the requested duration. "
                         "The calculated duration will be used."
                     )
-
+            invalidate_data_cache()
             vehicles = available_vehicles_for_interval(
                 travel_date,
                 allocator_start_time,
