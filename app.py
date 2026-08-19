@@ -12,6 +12,7 @@ from datetime import datetime, date, time, timedelta
 import pandas as pd
 import uuid
 import time as time_module
+from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="Vehicle Gate Pass", page_icon="🚐", layout="wide")
 
@@ -242,7 +243,7 @@ def audit(request_id, username, role, action, remarks=""):
 # ============================================================
 
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(ZoneInfo("Asia/Colombo")).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def normalize_bool(value):
