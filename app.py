@@ -1095,6 +1095,26 @@ def vehicle_allocator_portal():
             calculated_end_dt = requested_start_dt + timedelta(
                 minutes=duration_minutes
             )
+            allocator_start_time = st.time_input(
+                "Departure Time",
+                value=requested_start_dt.time(),
+                key=f"allocator_start_time_{request_id}",
+            )
+            
+            allocator_start_dt = datetime.combine(
+                travel_date,
+                allocator_start_time,
+            )
+            
+            allocator_end_dt = allocator_start_dt + timedelta(
+                minutes=duration_minutes
+            )
+            
+            st.info(
+                f"**New Confirmed Time:** "
+                f"{allocator_start_dt.strftime('%H:%M')} - "
+                f"{allocator_end_dt.strftime('%H:%M')}"
+            )
 
             if calculated_end_dt.date() != travel_date:
                 st.error("The requested trip extends into the next day.")
@@ -1170,8 +1190,8 @@ def vehicle_allocator_portal():
                 if not vehicle_is_available(
                     selected_vehicle_number,
                     travel_date,
-                    requested_start_dt,
-                    calculated_end_dt,
+                    allocator_start_dt,
+                    allocator_end_dt,
                     exclude_request_id=request_id,
                 ):
                     st.error(
@@ -1186,8 +1206,16 @@ def vehicle_allocator_portal():
                     request_id,
                     {
                         "status": "Pending HR",
-                        "start_time": requested_start_dt.strftime("%H:%M"),
-                        "end_time": calculated_end_dt.strftime("%H:%M"),
+                        "start_time": (
+                            allocator_start_dt.strftime(
+                                "%H:%M"
+                            )
+                        ),
+                        "end_time": (
+                            allocator_end_dt.strftime(
+                                "%H:%M"
+                            )
+                        ),
                         "vehicle_number": selected_vehicle_number,
                         "driver_username": driver_info.get("driver_username", ""),
                         "driver_name": driver_info.get("driver_name", ""),
@@ -1203,8 +1231,8 @@ def vehicle_allocator_portal():
                         f"Vehicle {selected_vehicle_number}; "
                         f"Fixed driver "
                         f"{driver_info.get('driver_name', '')}; "
-                        f"Time {requested_start_dt.strftime('%H:%M')} - "
-                        f"{calculated_end_dt.strftime('%H:%M')}; "
+                        f"Time {allocator_start_dt.strftime('%H:%M')} - "
+                        f"{allocator_end_dt.strftime('%H:%M')}; "
                         f"{remarks}"
                     ),
                 )
