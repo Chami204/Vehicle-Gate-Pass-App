@@ -1064,30 +1064,7 @@ def manager_portal():
                             "manager_approved_at": now_str(),
                         },
                     )
-                    audit(
-                        request_id,
-                        username,
-                        "Department Manager",
-                        "Manager Approved",
-                        reason,
-                    )
-                    st.success(
-                        "Request approved and sent to the Vehicle Allocator."
-                    )
-                    st.rerun()
 
-            with col_b:
-                if st.button("Reject", key=f"manager_reject_{request_id}"):
-                    update_request(
-                        request_id,
-                        {
-                            "status": "Rejected by Department Manager",
-                            "manager_decision": "Rejected",
-                            "manager_approved_by": username,
-                            "manager_approved_at": now_str(),
-                            "rejection_reason": reason,
-                        },
-                    )
                     allocator_email = get_allocator_email()
                     
                     if allocator_email:
@@ -1112,6 +1089,31 @@ def manager_portal():
                             recipient=allocator_email,
                         )
 
+                    
+                    audit(
+                        request_id,
+                        username,
+                        "Department Manager",
+                        "Manager Approved",
+                        reason,
+                    )
+                    st.success(
+                        "Request approved and sent to the Vehicle Allocator."
+                    )
+                    st.rerun()
+
+            with col_b:
+                if st.button("Reject", key=f"manager_reject_{request_id}"):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Rejected by Department Manager",
+                            "manager_decision": "Rejected",
+                            "manager_approved_by": username,
+                            "manager_approved_at": now_str(),
+                            "rejection_reason": reason,
+                        },
+                    )
                     
                     audit(
                         request_id,
