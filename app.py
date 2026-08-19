@@ -46,6 +46,7 @@ SHEET_HEADERS = {
 
 ACTIVE_STATUSES = {
     "Pending Department Manager",
+    "Pending Vehicle Allocation",
     "Pending HR",
     "Pending Security",
     "Vehicle Released",
@@ -56,6 +57,7 @@ ACTIVE_STATUSES = {
 ROLES = [
     "Employee / Requisitioner",
     "Department Manager",
+    "Vehicle Allocator",
     "HR Manager",
     "Security",
     "Driver",
@@ -155,15 +157,28 @@ def get_or_create_worksheet(name):
         worksheet = spreadsheet.worksheet(name)
     except gspread.WorksheetNotFound:
         headers = SHEET_HEADERS[name]
-        worksheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=max(20, len(headers) + 2))
-        worksheet.append_row(headers, value_input_option="USER_ENTERED")
+        worksheet = spreadsheet.add_worksheet(
+            title=name,
+            rows=1000,
+            cols=max(20, len(headers) + 2),
+        )
+        worksheet.append_row(
+            headers,
+            value_input_option="USER_ENTERED",
+        )
         return worksheet
+
     try:
         current_headers = worksheet.row_values(1)
     except Exception:
         current_headers = []
+
     if not current_headers:
-        worksheet.append_row(SHEET_HEADERS[name], value_input_option="USER_ENTERED")
+        worksheet.append_row(
+            SHEET_HEADERS[name],
+            value_input_option="USER_ENTERED",
+        )
+
     return worksheet
 
 
@@ -173,7 +188,11 @@ READ_CACHE_TTL = 60
 @st.cache_data(ttl=READ_CACHE_TTL, show_spinner=False)
 def read_sheet(name):
     worksheet = get_or_create_worksheet(name)
-    return pd.DataFrame(_api_call_with_backoff(worksheet.get_all_records))
+    return pd.DataFrame(
+        _api_call_with_backoff(
+            worksheet.get_all_records
+        )
+    )
 
 
 def invalidate_data_cache():
@@ -183,12 +202,14 @@ def invalidate_data_cache():
 def append_row(name, row_dict):
     worksheet = get_or_create_worksheet(name)
     headers = SHEET_HEADERS[name]
+
     _api_call_with_backoff(
         lambda: worksheet.append_row(
             [row_dict.get(header, "") for header in headers],
             value_input_option="USER_ENTERED",
         )
     )
+
     invalidate_data_cache()
 
 
@@ -197,29 +218,69 @@ def update_request(request_id, updates):
     worksheet = get_or_create_worksheet("GatePasses")
     headers = SHEET_HEADERS["GatePasses"]
     records = read_sheet("GatePasses")
+
     target_row = None
+
     if not records.empty and "request_id" in records.columns:
-        matches = records.index[records["request_id"].astype(str).str.strip() == str(request_id).strip()].tolist()
+        matches = records.index[
+            records["request_id"]
+            .astype(str)
+            .str.strip()
+            == str(request_id).strip()
+        ].tolist()
+
         if matches:
             target_row = matches[0] + 2
+
     if target_row is None:
         read_sheet.clear()
+
         for row_number, record in enumerate(
-            _api_call_with_backoff(worksheet.get_all_records), start=2
+            _api_call_with_backoff(
+                worksheet.get_all_records
+            ),
+            start=2,
         ):
-            if str(record.get("request_id", "")).strip() == str(request_id).strip():
+            if (
+                str(record.get("request_id", "")).strip()
+                == str(request_id).strip()
+            ):
                 target_row = row_number
                 break
+
     if target_row is None:
-        raise ValueError(f"Request {request_id} was not found.")
+        raise ValueError(
+            f"Request {request_id} was not found."
+        )
+
     payload = []
+
     for key, value in updates.items():
         if key not in headers:
             continue
+
         col = headers.index(key) + 1
-        payload.append({"range": gspread.utils.rowcol_to_a1(target_row, col), "values": [["" if value is None else str(value)]]})
+
+        payload.append(
+            {
+                "range": gspread.utils.rowcol_to_a1(
+                    target_row,
+                    col,
+                ),
+                "values": [
+                    ["" if value is None else str(value)]
+                ],
+            }
+        )
+
     if payload:
-        _api_call_with_backoff(lambda: worksheet.batch_update(payload, raw=False))
+        _api_call_with_backoff(
+            lambda: worksheet.batch_update(
+                payload,
+                raw=False,
+            )
+        )
+
     invalidate_data_cache()
 
 
@@ -342,7 +403,7 @@ def get_gatepasses():
 # ============================================================
 
 def authenticate_user(username, password, role):
-    """HR, Security and Administration login from Users sheet."""
+    """HR, Security, Administration and Vehicle Allocator login from Users sheet."""
     users = get_users()
 
     if users.empty:
@@ -414,6 +475,7 @@ def vehicle_driver(vehicle_number):
     """
     Return the permanent driver assigned to a vehicle.
 
+    The vehicle allocator selects the vehicle.
     Security never assigns a driver.
     The vehicle master determines the driver.
     """
@@ -433,13 +495,12 @@ def vehicle_driver(vehicle_number):
                 vehicle.get("driver_name", "")
             ).strip()
 
-            if (
-                driver_username
-                and not driver_name
-            ):
+            if driver_username and not driver_name:
                 for _, driver in drivers.iterrows():
                     if (
-                        str(driver.get("driver_username", "")).strip()
+                        str(
+                            driver.get("driver_username", "")
+                        ).strip()
                         == driver_username
                     ):
                         driver_name = str(
@@ -456,9 +517,17 @@ def vehicle_driver(vehicle_number):
 
 
 def request_interval(row):
-    travel_date = parse_date(row.get("travel_date"))
-    start_time = parse_time(row.get("start_time"))
-    end_time = parse_time(row.get("end_time"))
+    travel_date = parse_date(
+        row.get("travel_date")
+    )
+
+    start_time = parse_time(
+        row.get("start_time")
+    )
+
+    end_time = parse_time(
+        row.get("end_time")
+    )
 
     if not travel_date or not start_time or not end_time:
         return None, None
@@ -499,12 +568,16 @@ def vehicle_is_available(
         ):
             continue
 
-        status = str(row.get("status", "")).strip()
+        status = str(
+            row.get("status", "")
+        ).strip()
 
         if status not in ACTIVE_STATUSES:
             continue
 
-        row_date = parse_date(row.get("travel_date"))
+        row_date = parse_date(
+            row.get("travel_date")
+        )
 
         if row_date != travel_date:
             continue
@@ -562,7 +635,10 @@ def available_start_times(
     return slots
 
 
-def available_vehicles(travel_date, duration_minutes):
+def available_vehicles(
+    travel_date,
+    duration_minutes,
+):
     result = []
 
     for _, vehicle in get_vehicles().iterrows():
@@ -594,11 +670,21 @@ def available_vehicles(travel_date, duration_minutes):
                     "vehicle_type": vehicle_type,
                     "driver_username": driver_info.get(
                         "driver_username",
-                        str(vehicle.get("driver_username", "")).strip(),
+                        str(
+                            vehicle.get(
+                                "driver_username",
+                                "",
+                            )
+                        ).strip(),
                     ),
                     "driver_name": driver_info.get(
                         "driver_name",
-                        str(vehicle.get("driver_name", "")).strip(),
+                        str(
+                            vehicle.get(
+                                "driver_name",
+                                "",
+                            )
+                        ).strip(),
                     ),
                 }
             )
@@ -732,53 +818,93 @@ def _store_pending_request(draft):
 
 
 def _clear_pending_request():
-    st.session_state.pop("pending_vehicle_request", None)
-    st.session_state.pop("transfer_reminder_snooze_until", None)
+    st.session_state.pop(
+        "pending_vehicle_request",
+        None,
+    )
+    st.session_state.pop(
+        "transfer_reminder_snooze_until",
+        None,
+    )
 
 
-@st.dialog("⚠️ Vehicle Request Not Yet Transferred", width="medium")
+@st.dialog(
+    "⚠️ Vehicle Request Not Yet Transferred",
+    width="medium",
+)
 def transfer_reminder_dialog():
-    draft = st.session_state.get("pending_vehicle_request")
+    draft = st.session_state.get(
+        "pending_vehicle_request"
+    )
+
     if not draft:
         return
+
     st.warning(
-        "You have completed a vehicle request, but it has NOT been transferred "
-        "to the company Google Sheet yet."
+        "You have completed a vehicle request, but it has NOT been "
+        "transferred to the company Google Sheet yet."
     )
+
     st.write(
         f"**Request:** {draft['request_id']}\n\n"
-        f"**Vehicle:** {draft['vehicle_number']}\n\n"
         f"**Date:** {draft['travel_date']}\n\n"
-        f"**Time:** {draft['start_time']} - {draft['end_time']}"
+        f"**Duration:** {draft['duration_minutes']} minutes"
     )
+
     st.info(
         "The request is currently stored only in this browser session. "
         "Managers and HR will not see it until you transfer it."
     )
+
     c1, c2 = st.columns(2)
+
     with c1:
-        if st.button("Transfer Data Now", type="primary", use_container_width=True):
-            st.session_state["transfer_from_reminder"] = True
+        if st.button(
+            "Transfer Data Now",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state[
+                "transfer_from_reminder"
+            ] = True
             st.rerun()
+
     with c2:
-        if st.button("Continue Editing", use_container_width=True):
-            st.session_state["transfer_reminder_snooze_until"] = (
-                datetime.now() + timedelta(seconds=30)
+        if st.button(
+            "Continue Editing",
+            use_container_width=True,
+        ):
+            st.session_state[
+                "transfer_reminder_snooze_until"
+            ] = (
+                datetime.now()
+                + timedelta(seconds=30)
             ).isoformat()
+
             st.rerun()
 
 
 def maybe_show_transfer_reminder():
-    draft = st.session_state.get("pending_vehicle_request")
+    draft = st.session_state.get(
+        "pending_vehicle_request"
+    )
+
     if not draft:
         return
-    snooze = st.session_state.get("transfer_reminder_snooze_until")
+
+    snooze = st.session_state.get(
+        "transfer_reminder_snooze_until"
+    )
+
     if snooze:
         try:
-            if datetime.now() < datetime.fromisoformat(snooze):
+            if datetime.now() < datetime.fromisoformat(
+                snooze
+            ):
                 return
         except ValueError:
             pass
+
     transfer_reminder_dialog()
 
 
@@ -786,224 +912,317 @@ def _transfer_pending_request():
     """
     Transfer the prepared employee request ONLY after the user explicitly
     presses the final transfer button.
-
-    The request remains in Streamlit session state until the Google Sheet write
-    succeeds. This keeps the existing application flow unchanged while ensuring
-    that simply completing/reviewing the form does not submit anything.
     """
-    draft = st.session_state.get("pending_vehicle_request")
+    draft = st.session_state.get(
+        "pending_vehicle_request"
+    )
+
     if not draft:
         return False
 
-    # Prevent accidental duplicate submission caused by Streamlit reruns.
-    if st.session_state.get("_vehicle_transfer_in_progress", False):
-        st.warning("The request is already being transferred. Please wait.")
+    if st.session_state.get(
+        "_vehicle_transfer_in_progress",
+        False,
+    ):
+        st.warning(
+            "The request is already being transferred. Please wait."
+        )
         return False
 
-    st.session_state["_vehicle_transfer_in_progress"] = True
+    st.session_state[
+        "_vehicle_transfer_in_progress"
+    ] = True
 
     try:
-        # This is intentionally the ONLY fresh availability read associated
-        # with the final transfer. The normal form may use cached/read data,
-        # but the final submit checks the latest booking state.
         read_sheet.clear()
 
-        travel_date = parse_date(draft["travel_date"])
-        start_dt = datetime.fromisoformat(draft["start_datetime"])
-        end_dt = datetime.fromisoformat(draft["end_datetime"])
+        append_row(
+            "GatePasses",
+            draft["row"],
+        )
 
-        if not vehicle_is_available(
-            draft["vehicle_number"], travel_date, start_dt, end_dt
-        ):
-            st.error(
-                "This vehicle/time has just been booked by another user. "
-                "The request was NOT transferred. Please choose another time."
-            )
-            st.session_state.pop("transfer_from_reminder", None)
-            return False
-
-        # The actual GatePass write happens ONLY here.
-        append_row("GatePasses", draft["row"])
-
-        # Keep the existing audit behavior.
         audit(
             draft["request_id"],
             "employee",
             "Employee / Requisitioner",
             "Request Submitted",
-            f"Vehicle {draft['vehicle_number']}; fixed driver {draft['driver_name']}",
+            "Vehicle will be allocated after Department Manager approval.",
         )
 
-        # Only remove the local draft after the transfer has succeeded.
         _clear_pending_request()
-        st.session_state.pop("transfer_from_reminder", None)
-        st.session_state.pop("transfer_reminder_snooze_until", None)
+
+        st.session_state.pop(
+            "transfer_from_reminder",
+            None,
+        )
+
+        st.session_state.pop(
+            "transfer_reminder_snooze_until",
+            None,
+        )
 
         return True
 
     finally:
-        st.session_state["_vehicle_transfer_in_progress"] = False
+        st.session_state[
+            "_vehicle_transfer_in_progress"
+        ] = False
 
 
 def employee_portal():
     st.header("🚐 Vehicle Requisition")
+
     st.caption(
         "Complete the form first. Nothing is written to Google Sheets until "
         "you explicitly click the final transfer button."
     )
 
-    if st.session_state.get("transfer_from_reminder"):
+    if st.session_state.get(
+        "transfer_from_reminder"
+    ):
         try:
-            with st.spinner("Checking availability and transferring request..."):
+            with st.spinner(
+                "Transferring request..."
+            ):
                 if _transfer_pending_request():
-                    st.success("The request has been transferred to Google Sheets successfully.")
+                    st.success(
+                        "The request has been transferred to Google Sheets successfully."
+                    )
                     st.rerun()
+
         except Exception as error:
-            st.error("The request could not be transferred to Google Sheets.")
+            st.error(
+                "The request could not be transferred to Google Sheets."
+            )
             st.exception(error)
 
     maybe_show_transfer_reminder()
+
     departments = get_departments()
-    if departments.empty or "department" not in departments.columns:
-        st.error("No departments are configured in the Departments sheet.")
+
+    if (
+        departments.empty
+        or "department" not in departments.columns
+    ):
+        st.error(
+            "No departments are configured in the Departments sheet."
+        )
         return
 
     department_names = sorted(
-        [str(v).strip() for v in departments["department"].tolist() if str(v).strip()]
+        [
+            str(v).strip()
+            for v in departments["department"].tolist()
+            if str(v).strip()
+        ]
     )
 
     with st.form("vehicle_request_form"):
         col1, col2 = st.columns(2)
+
         with col1:
-            requisitioner = st.text_input("Requisitioner Name *")
-            department = st.selectbox("Department *", department_names)
+            requisitioner = st.text_input(
+                "Requisitioner Name *"
+            )
+
+            department = st.selectbox(
+                "Department *",
+                department_names,
+            )
+
             companions = st.text_area(
                 "Person(s) travelling with you",
                 placeholder="Enter names separated by commas",
             )
-            destination = st.text_input("Where are you going? *")
-            purpose = st.text_area("Purpose of travel *")
+
+            destination = st.text_input(
+                "Where are you going? *"
+            )
+
+            purpose = st.text_area(
+                "Purpose of travel *"
+            )
+
         with col2:
-            travel_date = st.date_input("Travel Date *", min_value=date.today())
+            travel_date = st.date_input(
+                "Travel Date *",
+                min_value=date.today(),
+            )
+
             duration_options = {
-                "30 minutes": 30, "1 hour": 60, "1.5 hours": 90,
-                "2 hours": 120, "3 hours": 180, "4 hours": 240,
-                "6 hours": 360, "8 hours": 480, "10 hours": 600,
+                "30 minutes": 30,
+                "1 hour": 60,
+                "1.5 hours": 90,
+                "2 hours": 120,
+                "3 hours": 180,
+                "4 hours": 240,
+                "6 hours": 360,
+                "8 hours": 480,
+                "10 hours": 600,
                 "12 hours": 720,
             }
-            duration_label = st.selectbox("Expected duration *", list(duration_options.keys()))
-            duration_minutes = duration_options[duration_label]
+
+            duration_label = st.selectbox(
+                "Expected duration *",
+                list(duration_options.keys()),
+            )
+
+            duration_minutes = duration_options[
+                duration_label
+            ]
 
         st.divider()
-        vehicles = available_vehicles(travel_date, duration_minutes)
-        if not vehicles:
-            st.warning(
-                "No vehicles have an available time slot for the selected date and duration."
-            )
-            selected_vehicle_number = None
-            selected_start = None
-            selected_vehicle = None
-        else:
-            vehicle_labels = [
-                f"{v['vehicle_number']} — {v['vehicle_type']} — Fixed Driver: "
-                f"{v['driver_name'] or v['driver_username']}"
-                for v in vehicles
-            ]
-            selected_label = st.selectbox("Available Vehicle *", vehicle_labels)
-            selected_vehicle = vehicles[vehicle_labels.index(selected_label)]
-            selected_vehicle_number = selected_vehicle["vehicle_number"]
-            times = available_start_times(
-                selected_vehicle_number, travel_date, duration_minutes
-            )
-            if not times:
-                st.error("No available time is currently offered for this vehicle.")
-                selected_start = None
-            else:
-                selected_start = st.selectbox(
-                    "Available Departure Time *", times, format_func=fmt_time
-                )
-                st.info(
-                    f"**Vehicle:** {selected_vehicle_number}\n\n"
-                    f"**Fixed Driver:** {selected_vehicle['driver_name'] or selected_vehicle['driver_username']}\n\n"
-                    "The requisitioner cannot change the vehicle's assigned driver."
-                )
+
+        st.info(
+            "Vehicle and departure time will be allocated by the "
+            "Vehicle Allocator after your Department Manager approves "
+            "the request."
+        )
 
         prepared = st.form_submit_button(
             "Review Request & Prepare Transfer",
-            disabled=(not vehicles or selected_start is None),
             type="primary",
         )
 
     if prepared:
-        if not requisitioner.strip() or not destination.strip() or not purpose.strip():
-            st.error("Please complete all required fields.")
+        if (
+            not requisitioner.strip()
+            or not destination.strip()
+            or not purpose.strip()
+        ):
+            st.error(
+                "Please complete all required fields."
+            )
             return
 
         manager = None
+
         for _, row in departments.iterrows():
-            if str(row.get("department", "")).strip() == department:
+            if (
+                str(
+                    row.get(
+                        "department",
+                        "",
+                    )
+                ).strip()
+                == department
+            ):
                 manager = row.to_dict()
                 break
+
         if not manager:
-            st.error("No manager is configured for this department.")
+            st.error(
+                "No manager is configured for this department."
+            )
             return
 
-        start_dt = datetime.combine(travel_date, selected_start)
-        end_dt = start_dt + timedelta(minutes=duration_minutes)
-        driver_info = vehicle_driver(selected_vehicle_number) or {}
         request_id = generate_request_id()
+
         row = {
-            "request_id": request_id, "created_at": now_str(),
-            "requisitioner_name": requisitioner.strip(), "department": department,
-            "manager_username": str(manager.get("manager_username", "")).strip(),
-            "companions": companions.strip(), "duration_minutes": duration_minutes,
-            "destination": destination.strip(), "purpose": purpose.strip(),
-            "travel_date": travel_date.isoformat(), "start_time": start_dt.strftime("%H:%M"),
-            "end_time": end_dt.strftime("%H:%M"), "vehicle_number": selected_vehicle_number,
-            "driver_username": driver_info.get("driver_username", ""),
-            "driver_name": driver_info.get("driver_name", ""),
-            "status": "Pending Department Manager", "manager_decision": "Pending",
-            "manager_approved_by": "", "manager_approved_at": "", "hr_decision": "Pending",
-            "hr_approved_by": "", "hr_approved_at": "", "security_released_by": "",
-            "security_released_at": "", "start_mileage": "", "driver_started_at": "",
-            "end_mileage": "", "distance_km": "", "driver_completed_at": "",
-            "security_verified_by": "", "security_verified_at": "", "rejection_reason": "",
-        }
-        _store_pending_request({
             "request_id": request_id,
-            "vehicle_number": selected_vehicle_number,
-            "driver_name": driver_info.get("driver_name", ""),
+            "created_at": now_str(),
+            "requisitioner_name": requisitioner.strip(),
+            "department": department,
+            "manager_username": str(
+                manager.get(
+                    "manager_username",
+                    "",
+                )
+            ).strip(),
+            "companions": companions.strip(),
+            "duration_minutes": duration_minutes,
+            "destination": destination.strip(),
+            "purpose": purpose.strip(),
             "travel_date": travel_date.isoformat(),
-            "start_time": start_dt.strftime("%H:%M"),
-            "end_time": end_dt.strftime("%H:%M"),
-            "start_datetime": start_dt.isoformat(), "end_datetime": end_dt.isoformat(),
-            "row": row,
-            "manager_name": manager.get("manager_name", manager.get("manager_username", "Manager")),
-        })
+            "start_time": "",
+            "end_time": "",
+            "vehicle_number": "",
+            "driver_username": "",
+            "driver_name": "",
+            "status": "Pending Department Manager",
+            "manager_decision": "Pending",
+            "manager_approved_by": "",
+            "manager_approved_at": "",
+            "hr_decision": "Pending",
+            "hr_approved_by": "",
+            "hr_approved_at": "",
+            "security_released_by": "",
+            "security_released_at": "",
+            "start_mileage": "",
+            "driver_started_at": "",
+            "end_mileage": "",
+            "distance_km": "",
+            "driver_completed_at": "",
+            "security_verified_by": "",
+            "security_verified_at": "",
+            "rejection_reason": "",
+        }
+
+        _store_pending_request(
+            {
+                "request_id": request_id,
+                "travel_date": travel_date.isoformat(),
+                "duration_minutes": duration_minutes,
+                "row": row,
+                "manager_name": manager.get(
+                    "manager_name",
+                    manager.get(
+                        "manager_username",
+                        "Manager",
+                    ),
+                ),
+            }
+        )
+
         st.rerun()
 
-    draft = st.session_state.get("pending_vehicle_request")
+    draft = st.session_state.get(
+        "pending_vehicle_request"
+    )
+
     if not draft:
         return
 
     st.divider()
-    st.subheader("📋 Final Transfer Point")
+
+    st.subheader(
+        "📋 Final Transfer Point"
+    )
+
     st.warning(
         "Your request is ready, but it has not been sent to Google Sheets. "
         "Click the button below to officially submit it."
     )
-    review = pd.DataFrame([{
-        "Request ID": draft["request_id"],
-        "Requisitioner": draft["row"]["requisitioner_name"],
-        "Department": draft["row"]["department"],
-        "Destination": draft["row"]["destination"],
-        "Purpose": draft["row"]["purpose"],
-        "Date": draft["travel_date"],
-        "Time": f"{draft['start_time']} - {draft['end_time']}",
-        "Vehicle": draft["vehicle_number"],
-        "Fixed Driver": draft["driver_name"],
-    }])
-    st.dataframe(review, use_container_width=True, hide_index=True)
+
+    review = pd.DataFrame(
+        [
+            {
+                "Request ID": draft["request_id"],
+                "Requisitioner": draft["row"][
+                    "requisitioner_name"
+                ],
+                "Department": draft["row"][
+                    "department"
+                ],
+                "Destination": draft["row"][
+                    "destination"
+                ],
+                "Purpose": draft["row"][
+                    "purpose"
+                ],
+                "Date": draft["travel_date"],
+                "Duration": f"{draft['duration_minutes']} minutes",
+                "Vehicle": "To be allocated",
+                "Driver": "To be allocated",
+            }
+        ]
+    )
+
+    st.dataframe(
+        review,
+        use_container_width=True,
+        hide_index=True,
+    )
 
     if st.button(
         "🚀 TRANSFER DATA TO GOOGLE SHEET",
@@ -1012,19 +1231,26 @@ def employee_portal():
         key="transfer_pending_request",
     ):
         try:
-            with st.spinner("Checking availability and transferring request..."):
+            with st.spinner(
+                "Transferring request..."
+            ):
                 if _transfer_pending_request():
                     st.success(
-                        f"Request {draft['request_id']} has been transferred successfully. "
-                        "The approval workflow can now begin."
+                        f"Request {draft['request_id']} has been transferred successfully."
                     )
+
                     st.info(
                         "Approval route: "
-                        f"{draft['manager_name']} → HR Manager → Security"
+                        f"{draft['manager_name']} → "
+                        "Vehicle Allocator → HR Manager → Security"
                     )
+
                     st.rerun()
+
         except Exception as error:
-            st.error("The request could not be transferred to Google Sheets.")
+            st.error(
+                "The request could not be transferred to Google Sheets."
+            )
             st.exception(error)
 
 
@@ -1063,7 +1289,10 @@ def manager_portal():
     ).strip()
 
     manager_username = str(
-        user.get("manager_username", username)
+        user.get(
+            "manager_username",
+            username,
+        )
     ).strip()
 
     pending = dataframe[
@@ -1102,8 +1331,7 @@ def manager_portal():
             (
                 f"{request_id} — "
                 f"{row.get('requisitioner_name', '')} — "
-                f"{row.get('travel_date', '')} "
-                f"{row.get('start_time', '')}"
+                f"{row.get('travel_date', '')}"
             )
         ):
             col1, col2 = st.columns(2)
@@ -1112,29 +1340,32 @@ def manager_portal():
                 st.write(
                     f"**Department:** {row.get('department', '')}"
                 )
+
                 st.write(
                     f"**Destination:** {row.get('destination', '')}"
                 )
+
                 st.write(
                     f"**Purpose:** {row.get('purpose', '')}"
                 )
+
                 st.write(
                     f"**Passengers:** {row.get('companions', '')}"
                 )
 
             with col2:
                 st.write(
-                    f"**Vehicle:** {row.get('vehicle_number', '')}"
-                )
-                st.write(
-                    f"**Fixed Driver:** {row.get('driver_name', '')}"
-                )
-                st.write(
                     f"**Date:** {row.get('travel_date', '')}"
                 )
+
                 st.write(
-                    f"**Time:** {row.get('start_time', '')} - "
-                    f"{row.get('end_time', '')}"
+                    f"**Expected Duration:** "
+                    f"{row.get('duration_minutes', '')} minutes"
+                )
+
+                st.info(
+                    "Vehicle and departure time will be allocated "
+                    "after this approval."
                 )
 
             reason = st.text_input(
@@ -1152,7 +1383,7 @@ def manager_portal():
                     update_request(
                         request_id,
                         {
-                            "status": "Pending HR",
+                            "status": "Pending Vehicle Allocation",
                             "manager_decision": "Approved",
                             "manager_approved_by": username,
                             "manager_approved_at": now_str(),
@@ -1168,8 +1399,9 @@ def manager_portal():
                     )
 
                     st.success(
-                        "Request approved and sent to HR."
+                        "Request approved and sent to the Vehicle Allocator."
                     )
+
                     st.rerun()
 
             with col_b:
@@ -1199,7 +1431,274 @@ def manager_portal():
                     st.warning(
                         "Request rejected."
                     )
+
                     st.rerun()
+
+
+# ============================================================
+# VEHICLE ALLOCATOR
+# ============================================================
+
+def vehicle_allocator_portal():
+    username = st.session_state.get(
+        "username",
+        "",
+    )
+
+    user = st.session_state.get(
+        "user",
+        {},
+    )
+
+    st.header("🚐 Vehicle Allocator")
+
+    st.caption(
+        f"Vehicle Allocator: {user.get('name', username)}"
+    )
+
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info(
+            "No vehicle requests found."
+        )
+        return
+
+    pending = dataframe[
+        dataframe["status"].astype(str)
+        == "Pending Vehicle Allocation"
+    ]
+
+    if pending.empty:
+        st.success(
+            "No requests are awaiting vehicle allocation."
+        )
+        return
+
+    for _, row in pending.iterrows():
+        request_id = str(
+            row.get("request_id", "")
+        )
+
+        travel_date = parse_date(
+            row.get("travel_date")
+        )
+
+        try:
+            duration_minutes = int(
+                float(
+                    row.get(
+                        "duration_minutes",
+                        0,
+                    )
+                )
+            )
+        except (ValueError, TypeError):
+            duration_minutes = 0
+
+        with st.expander(
+            (
+                f"{request_id} — "
+                f"{row.get('requisitioner_name', '')} — "
+                f"{row.get('travel_date', '')}"
+            )
+        ):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write(
+                    f"**Requisitioner:** "
+                    f"{row.get('requisitioner_name', '')}"
+                )
+
+                st.write(
+                    f"**Department:** "
+                    f"{row.get('department', '')}"
+                )
+
+                st.write(
+                    f"**Destination:** "
+                    f"{row.get('destination', '')}"
+                )
+
+                st.write(
+                    f"**Purpose:** "
+                    f"{row.get('purpose', '')}"
+                )
+
+                st.write(
+                    f"**Passengers:** "
+                    f"{row.get('companions', '')}"
+                )
+
+            with col2:
+                st.write(
+                    f"**Travel Date:** "
+                    f"{row.get('travel_date', '')}"
+                )
+
+                st.write(
+                    f"**Expected Duration:** "
+                    f"{duration_minutes} minutes"
+                )
+
+                st.success(
+                    "Department Manager: Approved"
+                )
+
+            if not travel_date or duration_minutes <= 0:
+                st.error(
+                    "The travel date or expected duration is invalid."
+                )
+                continue
+
+            vehicles = available_vehicles(
+                travel_date,
+                duration_minutes,
+            )
+
+            if not vehicles:
+                st.warning(
+                    "No vehicles are currently available for the requested "
+                    "date and duration."
+                )
+                continue
+
+            vehicle_labels = [
+                (
+                    f"{v['vehicle_number']} — "
+                    f"{v['vehicle_type']} — "
+                    f"Fixed Driver: "
+                    f"{v['driver_name'] or v['driver_username']}"
+                )
+                for v in vehicles
+            ]
+
+            selected_label = st.selectbox(
+                "Allocate Vehicle *",
+                vehicle_labels,
+                key=f"allocator_vehicle_{request_id}",
+            )
+
+            selected_vehicle = vehicles[
+                vehicle_labels.index(selected_label)
+            ]
+
+            selected_vehicle_number = (
+                selected_vehicle["vehicle_number"]
+            )
+
+            times = available_start_times(
+                selected_vehicle_number,
+                travel_date,
+                duration_minutes,
+            )
+
+            if not times:
+                st.error(
+                    "No available departure time is currently offered "
+                    "for this vehicle."
+                )
+                continue
+
+            selected_start = st.selectbox(
+                "Allocate Departure Time *",
+                times,
+                format_func=fmt_time,
+                key=f"allocator_time_{request_id}",
+            )
+
+            selected_driver = vehicle_driver(
+                selected_vehicle_number
+            ) or {}
+
+            st.info(
+                f"**Vehicle:** {selected_vehicle_number}\n\n"
+                f"**Fixed Driver:** "
+                f"{selected_driver.get('driver_name', '') "
+                f"or selected_driver.get('driver_username', '')}"
+            )
+
+            remarks = st.text_input(
+                "Allocation remarks",
+                key=f"allocator_remarks_{request_id}",
+            )
+
+            if st.button(
+                "Allocate Vehicle & Send to HR",
+                type="primary",
+                key=f"allocate_vehicle_{request_id}",
+            ):
+                read_sheet.clear()
+
+                start_dt = datetime.combine(
+                    travel_date,
+                    selected_start,
+                )
+
+                end_dt = (
+                    start_dt
+                    + timedelta(
+                        minutes=duration_minutes
+                    )
+                )
+
+                if not vehicle_is_available(
+                    selected_vehicle_number,
+                    travel_date,
+                    start_dt,
+                    end_dt,
+                    exclude_request_id=request_id,
+                ):
+                    st.error(
+                        "This vehicle/time has just been allocated to "
+                        "another request. Please select another vehicle "
+                        "or time."
+                    )
+                    st.rerun()
+
+                driver_info = vehicle_driver(
+                    selected_vehicle_number
+                ) or {}
+
+                update_request(
+                    request_id,
+                    {
+                        "status": "Pending HR",
+                        "start_time": start_dt.strftime("%H:%M"),
+                        "end_time": end_dt.strftime("%H:%M"),
+                        "vehicle_number": selected_vehicle_number,
+                        "driver_username": driver_info.get(
+                            "driver_username",
+                            "",
+                        ),
+                        "driver_name": driver_info.get(
+                            "driver_name",
+                            "",
+                        ),
+                    },
+                )
+
+                audit(
+                    request_id,
+                    username,
+                    "Vehicle Allocator",
+                    "Vehicle Allocated",
+                    (
+                        f"Vehicle {selected_vehicle_number}; "
+                        f"Fixed driver "
+                        f"{driver_info.get('driver_name', '')}; "
+                        f"Time {start_dt.strftime('%H:%M')} - "
+                        f"{end_dt.strftime('%H:%M')}; "
+                        f"{remarks}"
+                    ),
+                )
+
+                st.success(
+                    "Vehicle allocated successfully and request sent to HR."
+                )
+
+                st.rerun()
 
 
 # ============================================================
@@ -1249,28 +1748,43 @@ def hr_portal():
 
                 with col1:
                     st.write(
-                        f"**Destination:** {row.get('destination', '')}"
+                        f"**Destination:** "
+                        f"{row.get('destination', '')}"
                     )
+
                     st.write(
-                        f"**Purpose:** {row.get('purpose', '')}"
+                        f"**Purpose:** "
+                        f"{row.get('purpose', '')}"
                     )
+
                     st.write(
-                        f"**Date:** {row.get('travel_date', '')}"
+                        f"**Date:** "
+                        f"{row.get('travel_date', '')}"
                     )
+
                     st.write(
-                        f"**Time:** {row.get('start_time', '')} - "
+                        f"**Time:** "
+                        f"{row.get('start_time', '')} - "
                         f"{row.get('end_time', '')}"
                     )
 
                 with col2:
                     st.write(
-                        f"**Vehicle:** {row.get('vehicle_number', '')}"
+                        f"**Vehicle:** "
+                        f"{row.get('vehicle_number', '')}"
                     )
+
                     st.write(
-                        f"**Fixed Driver:** {row.get('driver_name', '')}"
+                        f"**Fixed Driver:** "
+                        f"{row.get('driver_name', '')}"
                     )
+
                     st.success(
                         "Department Manager: Approved"
+                    )
+
+                    st.success(
+                        "Vehicle Allocated"
                     )
 
                 reason = st.text_input(
@@ -1306,6 +1820,7 @@ def hr_portal():
                         st.success(
                             "Request approved and sent to Security."
                         )
+
                         st.rerun()
 
                 with col_b:
@@ -1335,6 +1850,7 @@ def hr_portal():
                         st.warning(
                             "Request rejected."
                         )
+
                         st.rerun()
 
     st.divider()
@@ -1397,34 +1913,54 @@ def security_portal():
                 )
             ):
                 st.write(
-                    f"**Employee:** {row.get('requisitioner_name', '')}"
+                    f"**Employee:** "
+                    f"{row.get('requisitioner_name', '')}"
                 )
+
                 st.write(
-                    f"**Department:** {row.get('department', '')}"
+                    f"**Department:** "
+                    f"{row.get('department', '')}"
                 )
+
                 st.write(
-                    f"**Destination:** {row.get('destination', '')}"
+                    f"**Destination:** "
+                    f"{row.get('destination', '')}"
                 )
+
                 st.write(
-                    f"**Purpose:** {row.get('purpose', '')}"
+                    f"**Purpose:** "
+                    f"{row.get('purpose', '')}"
                 )
+
                 st.write(
-                    f"**Date:** {row.get('travel_date', '')}"
+                    f"**Date:** "
+                    f"{row.get('travel_date', '')}"
                 )
+
                 st.write(
-                    f"**Time:** {row.get('start_time', '')} - "
+                    f"**Time:** "
+                    f"{row.get('start_time', '')} - "
                     f"{row.get('end_time', '')}"
                 )
+
                 st.write(
-                    f"**Vehicle:** {row.get('vehicle_number', '')}"
+                    f"**Vehicle:** "
+                    f"{row.get('vehicle_number', '')}"
                 )
+
                 st.write(
-                    f"**Fixed Driver:** {row.get('driver_name', '')}"
+                    f"**Fixed Driver:** "
+                    f"{row.get('driver_name', '')}"
                 )
 
                 st.success(
                     "Department Manager: Approved"
                 )
+
+                st.success(
+                    "Vehicle Allocated"
+                )
+
                 st.success(
                     "HR: Approved"
                 )
@@ -1453,8 +1989,10 @@ def security_portal():
                         "Security",
                         "Vehicle Released",
                         (
-                            f"Vehicle {row.get('vehicle_number', '')}; "
-                            f"fixed driver {row.get('driver_name', '')}"
+                            f"Vehicle "
+                            f"{row.get('vehicle_number', '')}; "
+                            f"fixed driver "
+                            f"{row.get('driver_name', '')}"
                         ),
                     )
 
@@ -1462,6 +2000,7 @@ def security_portal():
                         "Vehicle released. "
                         "The assigned driver can now start the trip."
                     )
+
                     st.rerun()
 
     st.divider()
@@ -1494,19 +2033,28 @@ def security_portal():
                 )
             ):
                 st.write(
-                    f"**Vehicle:** {row.get('vehicle_number', '')}"
+                    f"**Vehicle:** "
+                    f"{row.get('vehicle_number', '')}"
                 )
+
                 st.write(
-                    f"**Fixed Driver:** {row.get('driver_name', '')}"
+                    f"**Fixed Driver:** "
+                    f"{row.get('driver_name', '')}"
                 )
+
                 st.write(
-                    f"**Start Mileage:** {row.get('start_mileage', '')} km"
+                    f"**Start Mileage:** "
+                    f"{row.get('start_mileage', '')} km"
                 )
+
                 st.write(
-                    f"**End Mileage:** {row.get('end_mileage', '')} km"
+                    f"**End Mileage:** "
+                    f"{row.get('end_mileage', '')} km"
                 )
+
                 st.write(
-                    f"**Distance:** {row.get('distance_km', '')} km"
+                    f"**Distance:** "
+                    f"{row.get('distance_km', '')} km"
                 )
 
                 remarks = st.text_input(
@@ -1538,6 +2086,7 @@ def security_portal():
                     st.success(
                         "Trip verified and closed."
                     )
+
                     st.rerun()
 
 
@@ -1613,20 +2162,30 @@ def driver_portal():
             )
         ):
             st.write(
-                f"**Vehicle:** {row.get('vehicle_number', '')}"
+                f"**Vehicle:** "
+                f"{row.get('vehicle_number', '')}"
             )
+
             st.write(
-                f"**Destination:** {row.get('destination', '')}"
+                f"**Destination:** "
+                f"{row.get('destination', '')}"
             )
+
             st.write(
-                f"**Purpose:** {row.get('purpose', '')}"
+                f"**Purpose:** "
+                f"{row.get('purpose', '')}"
             )
+
             st.write(
-                f"**Departure:** {row.get('start_time', '')}"
+                f"**Departure:** "
+                f"{row.get('start_time', '')}"
             )
+
             st.write(
-                f"**Return:** {row.get('end_time', '')}"
+                f"**Return:** "
+                f"{row.get('end_time', '')}"
             )
+
             st.write(
                 f"**Status:** {status}"
             )
@@ -1647,6 +2206,7 @@ def driver_portal():
                         st.error(
                             "Please enter the starting mileage."
                         )
+
                     else:
                         update_request(
                             request_id,
@@ -1668,6 +2228,7 @@ def driver_portal():
                         st.success(
                             "Trip started."
                         )
+
                         st.rerun()
 
             elif status == "Trip In Progress":
@@ -1702,6 +2263,7 @@ def driver_portal():
                             "Ending mileage cannot be less "
                             "than starting mileage."
                         )
+
                     else:
                         distance = (
                             end_mileage
@@ -1733,6 +2295,7 @@ def driver_portal():
                             "Trip completed and sent to Security "
                             "for verification."
                         )
+
                         st.rerun()
 
             else:
@@ -1745,10 +2308,12 @@ def driver_portal():
                     f"Start mileage: "
                     f"{row.get('start_mileage', '')} km"
                 )
+
                 st.write(
                     f"End mileage: "
                     f"{row.get('end_mileage', '')} km"
                 )
+
                 st.write(
                     f"Distance: "
                     f"{row.get('distance_km', '')} km"
@@ -1790,22 +2355,22 @@ def admin_portal():
 
     with col2:
         st.metric(
-            "Pending HR",
+            "Pending Vehicle Allocation",
             int(
                 (
                     dataframe["status"]
-                    == "Pending HR"
+                    == "Pending Vehicle Allocation"
                 ).sum()
             ),
         )
 
     with col3:
         st.metric(
-            "Pending Security",
+            "Pending HR",
             int(
                 (
                     dataframe["status"]
-                    == "Pending Security"
+                    == "Pending HR"
                 ).sum()
             ),
         )
@@ -1820,6 +2385,83 @@ def admin_portal():
                 ).sum()
             ),
         )
+
+    st.subheader(
+        "Gate Pass History Download"
+    )
+
+    travel_dates = sorted(
+        [
+            parsed_date
+            for parsed_date in (
+                parse_date(value)
+                for value in dataframe["travel_date"].tolist()
+            )
+            if parsed_date is not None
+        ]
+    )
+
+    if travel_dates:
+        selected_history_date = st.date_input(
+            "Travel Date *",
+            value=travel_dates[-1],
+            key="admin_history_travel_date",
+        )
+
+        selected_records = dataframe[
+            dataframe["travel_date"].apply(
+                parse_date
+            )
+            == selected_history_date
+        ].copy()
+
+        st.write(
+            f"Records for Travel Date "
+            f"**{selected_history_date.isoformat()}**: "
+            f"**{len(selected_records)}**"
+        )
+
+        if selected_records.empty:
+            st.info(
+                "No GatePass records found for the selected Travel Date."
+            )
+
+        else:
+            st.dataframe(
+                selected_records,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            excel_buffer = pd.io.common.BytesIO()
+
+            with pd.ExcelWriter(
+                excel_buffer,
+                engine="openpyxl",
+            ) as writer:
+                selected_records.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name="GatePasses",
+                )
+
+            excel_buffer.seek(0)
+
+            st.download_button(
+                label="📥 Download Gate Pass History as Excel",
+                data=excel_buffer.getvalue(),
+                file_name=(
+                    f"GatePass_History_"
+                    f"{selected_history_date.isoformat()}.xlsx"
+                ),
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                use_container_width=True,
+            )
+
+    st.divider()
 
     st.subheader(
         "All Gate Pass Records"
@@ -1904,41 +2546,89 @@ def ensure_sheets():
 # ============================================================
 
 def main():
-    st.title("🚐 Vehicle Gate Pass Management System")
-    st.caption("Digital vehicle requisition, multi-level approval, fixed vehicle-driver assignment, mileage recording and security verification.")
+    st.title(
+        "🚐 Vehicle Gate Pass Management System"
+    )
+
+    st.caption(
+        "Digital vehicle requisition, multi-level approval, "
+        "vehicle allocation, fixed vehicle-driver assignment, "
+        "mileage recording and security verification."
+    )
 
     # Do not call ensure_sheets() on every rerun. Worksheet handles are cached
     # and sheets are initialized lazily when a role actually needs data.
     if st.session_state.get("logged_in"):
-        role = st.session_state.get("role", "")
+        role = st.session_state.get(
+            "role",
+            "",
+        )
+
         with st.sidebar:
-            st.success(f"Logged in: {st.session_state.get('username', '')}")
-            st.write(f"Role: **{role}**")
-            if st.button("🔄 Refresh Google Sheet Data", use_container_width=True):
+            st.success(
+                f"Logged in: "
+                f"{st.session_state.get('username', '')}"
+            )
+
+            st.write(
+                f"Role: **{role}**"
+            )
+
+            if st.button(
+                "🔄 Refresh Google Sheet Data",
+                use_container_width=True,
+            ):
                 invalidate_data_cache()
-                st.success("Google Sheet cache refreshed.")
+
+                st.success(
+                    "Google Sheet cache refreshed."
+                )
+
                 st.rerun()
-            if st.button("Logout", use_container_width=True):
+
+            if st.button(
+                "Logout",
+                use_container_width=True,
+            ):
                 logout()
+
         if role == "Employee / Requisitioner":
             employee_portal()
+
         elif role == "Department Manager":
             manager_portal()
+
+        elif role == "Vehicle Allocator":
+            vehicle_allocator_portal()
+
         elif role == "HR Manager":
             hr_portal()
+
         elif role == "Security":
             security_portal()
+
         elif role == "Driver":
             driver_portal()
+
         elif role == "Administration":
             admin_portal()
+
         else:
-            st.error("Unknown role.")
+            st.error(
+                "Unknown role."
+            )
+
         return
 
-    role = st.radio("Select Portal", ROLES, index=0)
+    role = st.radio(
+        "Select Portal",
+        ROLES,
+        index=0,
+    )
+
     if role == "Employee / Requisitioner":
         employee_portal()
+
     else:
         login_portal(role)
 
