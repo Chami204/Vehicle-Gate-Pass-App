@@ -3090,21 +3090,24 @@ def admin_portal():
                 use_container_width=True,
                 hide_index=True,
             )
+            
+            from io import BytesIO
 
-            excel_buffer = pd.io.common.BytesIO()
-
+            excel_buffer = BytesIO()
+            
             with pd.ExcelWriter(
                 excel_buffer,
                 engine="openpyxl",
-            ):
-
+            ) as writer:
+            
                 selected_records.to_excel(
-                    excel_buffer,
+                    writer,
                     index=False,
                     sheet_name="GatePasses",
                 )
-
+            
             excel_buffer.seek(0)
+            
 
             st.download_button(
                 label=(
