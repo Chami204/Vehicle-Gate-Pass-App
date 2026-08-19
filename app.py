@@ -1615,7 +1615,7 @@ def vehicle_allocator_portal():
             st.info(
                 f"**Vehicle:** {selected_vehicle_number}\n\n"
                 f"**Fixed Driver:** "
-                f"{selected_driver.get('driver_name', '')} "
+                f"{selected_driver.get('driver_name', '')}"
                 f"or selected_driver.get('driver_username', '')}"
             )
 
