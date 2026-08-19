@@ -2031,7 +2031,7 @@ def vehicle_allocator_portal():
                 f"{selected_vehicle_number}\n\n"
                 f"**Fixed Driver:** "
                 f"{selected_driver.get('driver_name', '')}"
-                f"or selected_driver.get('driver_username', '')}\n\n"
+                f"or selected_driver.get('driver_username', '')\n\n"
                 f"**Confirmed Time:** "
                 f"{requested_start_dt.strftime('%H:%M')} - "
                 f"{calculated_end_dt.strftime('%H:%M')}"
