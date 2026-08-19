@@ -1131,7 +1131,7 @@ def vehicle_allocator_portal():
 
             vehicles = available_vehicles_for_interval(
                 travel_date,
-                requested_start,
+                allocator_start_time,
                 duration_minutes,
             )
 
