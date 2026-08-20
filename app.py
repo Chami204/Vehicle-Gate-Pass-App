@@ -740,7 +740,147 @@ def _transfer_pending_request():
         return True
     finally:
         st.session_state["_vehicle_transfer_in_progress"] = False
+def requisitioner_status_checker():
+    st.subheader("🔎 Check Gate Pass Status")
 
+    st.write(
+        "Enter the Request ID you received after submitting your vehicle request."
+    )
+
+    request_id = st.text_input(
+        "Request ID",
+        placeholder="Example: REQ-XXXXXXXX",
+        key="requisitioner_status_request_id",
+    ).strip()
+
+    if st.button(
+        "Check Status",
+        type="primary",
+        key="check_requisitioner_status",
+    ):
+        if not request_id:
+            st.warning("Please enter your Request ID.")
+            return
+
+        dataframe = get_gatepasses()
+
+        if dataframe.empty:
+            st.error("No vehicle requests are currently available.")
+            return
+
+        matches = dataframe[
+            dataframe["request_id"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == request_id.upper()
+        ]
+
+        if matches.empty:
+            st.error(
+                "Request ID not found. Please check the Request ID and try again."
+            )
+            return
+
+        row = matches.iloc[0]
+
+        status = str(row.get("status", "")).strip()
+
+        st.success(f"Request found: **{request_id}**")
+
+        st.markdown(f"### Current Status: **{status}**")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write(
+                f"**Requisitioner:** "
+                f"{row.get('requisitioner_name', '')}"
+            )
+
+            st.write(
+                f"**Department:** "
+                f"{row.get('department', '')}"
+            )
+
+            st.write(
+                f"**Travel Date:** "
+                f"{row.get('travel_date', '')}"
+            )
+
+            st.write(
+                f"**Destination:** "
+                f"{row.get('destination', '')}"
+            )
+
+        with col2:
+            st.write(
+                f"**Vehicle:** "
+                f"{row.get('vehicle_number', '') or 'Not allocated yet'}"
+            )
+
+            st.write(
+                f"**Driver:** "
+                f"{row.get('driver_name', '') or 'Not allocated yet'}"
+            )
+
+            st.write(
+                f"**Vehicle Time:** "
+                f"{row.get('start_time', '')} - "
+                f"{row.get('end_time', '')}"
+            )
+
+        st.divider()
+
+        st.subheader("Approval Progress")
+
+        manager_decision = str(
+            row.get("manager_decision", "")
+        ).strip()
+
+        hr_decision = str(
+            row.get("hr_decision", "")
+        ).strip()
+
+        if manager_decision == "Approved":
+            st.success("✅ Department Manager: Approved")
+        elif manager_decision == "Rejected":
+            st.error("❌ Department Manager: Rejected")
+        else:
+            st.info("⏳ Department Manager: Pending")
+
+        if row.get("vehicle_number", ""):
+            st.success("✅ Vehicle Allocation: Completed")
+        else:
+            st.info("⏳ Vehicle Allocation: Pending")
+
+        if hr_decision == "Approved":
+            st.success("✅ HR Manager: Approved")
+        elif hr_decision == "Rejected":
+            st.error("❌ HR Manager: Rejected")
+        else:
+            st.info("⏳ HR Manager: Pending")
+
+        if status in [
+            "Pending Security",
+            "Vehicle Released",
+            "Trip In Progress",
+            "Pending Security Verification",
+            "Completed",
+        ]:
+            st.success("✅ Security Stage: Reached")
+
+        if status == "Completed":
+            st.success("🎉 Gate Pass process completed.")
+
+        rejection_reason = str(
+            row.get("rejection_reason", "")
+        ).strip()
+
+        if rejection_reason:
+            st.error(
+                f"**Reason:** {rejection_reason}"
+            )
 
 def employee_portal():
     st.header("🚐 Vehicle Requisition")
@@ -750,7 +890,15 @@ def employee_portal():
         "The Vehicle Allocator will select an available vehicle for "
         "your requested time."
     )
+    st.divider()
 
+    requisitioner_status_checker()
+
+    st.divider()
+
+    st.subheader("📝 Submit a New Vehicle Request")
+
+    
     if st.session_state.get("transfer_from_reminder"):
         try:
             with st.spinner("Transferring request..."):
