@@ -411,16 +411,20 @@ def get_security_email():
 # find email by user name
 # ============================================================
 
-def get_user_email_by_username(username):
-    users = get_users()
+def get_manager_email_by_username(username):
+    departments = get_departments()
 
-    if users.empty:
+    if departments.empty:
         return None
 
     username = str(username).strip()
 
-    matches = users[
-        users["username"].astype(str).str.strip() == username
+    matches = departments[
+        departments["manager_username"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        == username.lower()
     ]
 
     if matches.empty:
@@ -779,6 +783,7 @@ def maybe_show_transfer_reminder():
 
 def _transfer_pending_request():
     draft = st.session_state.get("pending_vehicle_request")
+
     if not draft:
         return False
 
@@ -789,68 +794,89 @@ def _transfer_pending_request():
     st.session_state["_vehicle_transfer_in_progress"] = True
 
     try:
+        # -----------------------------------------
+        # SAVE REQUEST TO GOOGLE SHEETS
+        # -----------------------------------------
+
         read_sheet.clear()
-        append_row("GatePasses", draft["row"])
-        
-        # -------------------------------------------------
-        # EMAIL DEPARTMENT MANAGER
-        # -------------------------------------------------
-        
+
+        append_row(
+            "GatePasses",
+            draft["row"]
+        )
+
+        # -----------------------------------------
+        # FIND DEPARTMENT MANAGER EMAIL
+        # -----------------------------------------
+
         manager_username = str(
             draft["row"].get("manager_username", "")
         ).strip()
-        
-        manager_email = get_user_email_by_username(
+
+        manager_email = get_manager_email_by_username(
             manager_username
         )
-        
+
+        # -----------------------------------------
+        # SEND EMAIL TO DEPARTMENT MANAGER
+        # -----------------------------------------
+
         if manager_email:
-        
+
             email_sent = send_email(
                 subject=(
                     f"Vehicle Request Awaiting Approval - "
                     f"{draft['request_id']}"
                 ),
+
                 body=(
-                    f"A new vehicle request has been submitted "
-                    f"and is awaiting Department Manager approval.\n\n"
-        
+                    "A new vehicle request has been submitted "
+                    "and is awaiting Department Manager approval.\n\n"
+
                     f"Request ID: {draft['request_id']}\n"
-                    f"Employee: "
-                    f"{draft['row'].get('requisitioner_name', '')}\n"
-                    f"Department: "
-                    f"{draft['row'].get('department', '')}\n"
-                    f"Destination: "
-                    f"{draft['row'].get('destination', '')}\n"
-                    f"Purpose: "
-                    f"{draft['row'].get('purpose', '')}\n\n"
-        
-                    f"Travel Date: "
-                    f"{draft['row'].get('travel_date', '')}\n"
+                    f"Employee: {draft['row'].get('requisitioner_name', '')}\n"
+                    f"Department: {draft['row'].get('department', '')}\n"
+                    f"Manager Username: {manager_username}\n\n"
+
+                    f"Destination: {draft['row'].get('destination', '')}\n"
+                    f"Purpose: {draft['row'].get('purpose', '')}\n\n"
+
+                    f"Travel Date: {draft['row'].get('travel_date', '')}\n"
                     f"Required Time: "
                     f"{draft['row'].get('start_time', '')} - "
                     f"{draft['row'].get('end_time', '')}\n"
                     f"Duration: "
                     f"{draft['row'].get('duration_minutes', '')} minutes\n\n"
-        
-                    f"Please log in to the Vehicle Gate Pass "
-                    f"Management System and review this request."
+
+                    "Please log in to the Vehicle Gate Pass "
+                    "Management System and review this request."
                 ),
+
                 recipient=manager_email,
             )
-        
-            if not email_sent:
+
+            if email_sent:
+                st.success(
+                    f"Email sent successfully to Department Manager: "
+                    f"{manager_email}"
+                )
+            else:
                 st.warning(
                     "Request was saved, but the email to the "
                     "Department Manager could not be sent."
                 )
-        
+
         else:
             st.warning(
-                "Request was saved, but no email address was found "
-                "for the Department Manager."
+                f"Request was saved, but no email address was found "
+                f"for Department Manager '{manager_username}'. "
+                f"Please check the Departments sheet."
             )
-        
+
+        # -----------------------------------------
+        # AUDIT
+        # -----------------------------------------
+
         audit(
             draft["request_id"],
             "employee",
@@ -860,11 +886,24 @@ def _transfer_pending_request():
         )
 
         _clear_pending_request()
-        st.session_state.pop("transfer_from_reminder", None)
-        st.session_state.pop("transfer_reminder_snooze_until", None)
+
+        st.session_state.pop(
+            "transfer_from_reminder",
+            None
+        )
+
+        st.session_state.pop(
+            "transfer_reminder_snooze_until",
+            None
+        )
+
         return True
+
     finally:
         st.session_state["_vehicle_transfer_in_progress"] = False
+
+
+
 def requisitioner_status_checker():
     st.subheader("🔎 Check Gate Pass Status")
 
