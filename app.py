@@ -384,7 +384,29 @@ def get_allocator_email():
         )
     ).strip()
 
+def get_security_email():
 
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    security_users = users[
+        users["role"].astype(str).str.strip()
+        == "Security"
+    ]
+
+    if security_users.empty:
+        return None
+
+    email = str(
+        security_users.iloc[0].get(
+            "email",
+            "",
+        )
+    ).strip()
+
+    return email if email else None
 
 # ============================================================
 # AUTHENTICATION
@@ -1542,6 +1564,10 @@ def hr_portal():
 
                 with col_a:
                     if st.button("HR Approve", key=f"hr_approve_{request_id}"):
+                    
+                        # -----------------------------------------
+                        # Update request after HR approval
+                        # -----------------------------------------
                         update_request(
                             request_id,
                             {
@@ -1551,6 +1577,74 @@ def hr_portal():
                                 "hr_approved_at": now_str(),
                             },
                         )
+                    
+                        # -----------------------------------------
+                        # Send email notification to Security
+                        # -----------------------------------------
+                        security_email = get_security_email()
+                    
+                        if security_email:
+                    
+                            email_sent = send_email(
+                                subject=(
+                                    f"Vehicle Gate Pass Approved - "
+                                    f"{request_id}"
+                                ),
+                                body=(
+                                    f"A vehicle gate pass has been approved by HR "
+                                    f"and is now awaiting Security action.\n\n"
+                    
+                                    f"Request ID: {request_id}\n"
+                                    f"Employee: "
+                                    f"{row.get('requisitioner_name', '')}\n"
+                                    f"Department: "
+                                    f"{row.get('department', '')}\n"
+                                    f"Destination: "
+                                    f"{row.get('destination', '')}\n"
+                                    f"Purpose: "
+                                    f"{row.get('purpose', '')}\n\n"
+                    
+                                    f"Travel Date: "
+                                    f"{row.get('travel_date', '')}\n"
+                                    f"Departure Time: "
+                                    f"{row.get('start_time', '')}\n"
+                                    f"Return Time: "
+                                    f"{row.get('end_time', '')}\n\n"
+                    
+                                    f"Vehicle Number: "
+                                    f"{row.get('vehicle_number', '')}\n"
+                                    f"Vehicle Type: "
+                                    f"{row.get('vehicle_type', '')}\n"
+                                    f"Fixed Driver: "
+                                    f"{row.get('driver_name', '')}\n"
+                                    f"Driver Username: "
+                                    f"{row.get('driver_username', '')}\n\n"
+                    
+                                    f"HR Approved By: {username}\n"
+                                    f"HR Approved At: {now_str()}\n\n"
+                    
+                                    f"Please log in to the Vehicle Gate Pass "
+                                    f"Management System and verify/release the "
+                                    f"vehicle when appropriate."
+                                ),
+                                recipient=security_email,
+                            )
+                    
+                            if not email_sent:
+                                st.warning(
+                                    "HR approval was successful, but the email "
+                                    "notification to Security could not be sent."
+                                )
+                    
+                        else:
+                            st.warning(
+                                "HR approval was successful, but no active Security "
+                                "user email address was found in the Users sheet."
+                            )
+                    
+                        # -----------------------------------------
+                        # Audit HR approval
+                        # -----------------------------------------
                         audit(
                             request_id,
                             username,
@@ -1558,9 +1652,11 @@ def hr_portal():
                             "HR Approved",
                             reason,
                         )
+                    
                         st.success(
-                            "Request approved and sent to Security."
+                            "Request approved by HR and sent to Security."
                         )
+                    
                         st.rerun()
 
                 with col_b:
