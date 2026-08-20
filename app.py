@@ -1536,7 +1536,7 @@ def vehicle_allocator_portal():
 
             if not travel_date or not requested_start or duration_minutes <= 0:
                 st.error("The travel date, requested start time, or duration is invalid.")
-            continue
+                continue
 
             requested_start_dt = datetime.combine(travel_date, requested_start)
             calculated_end_dt = requested_start_dt + timedelta(
