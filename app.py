@@ -227,6 +227,45 @@ def update_request(request_id, updates):
         )
     invalidate_data_cache()
 
+def delete_request(request_id):
+    """
+    Permanently delete a GatePass record from the Google Sheet.
+
+    The request must already exist in the GatePasses worksheet.
+    The corresponding Google Sheet row is physically deleted.
+    """
+
+    worksheet = get_or_create_worksheet("GatePasses")
+
+    # Get fresh records directly from Google Sheets
+    records = _api_call_with_backoff(
+        worksheet.get_all_records
+    )
+
+    target_row = None
+
+    for row_number, record in enumerate(records, start=2):
+        if (
+            str(record.get("request_id", "")).strip()
+            == str(request_id).strip()
+        ):
+            target_row = row_number
+            break
+
+    if target_row is None:
+        raise ValueError(
+            f"Request {request_id} was not found in Google Sheets."
+        )
+
+    # Permanently delete the Google Sheet row
+    _api_call_with_backoff(
+        lambda: worksheet.delete_rows(target_row)
+    )
+
+    # Clear Streamlit cache so the deleted record disappears immediately
+    invalidate_data_cache()
+
+
 
 def audit(request_id, username, role, action, remarks=""):
     append_row(
@@ -1710,6 +1749,163 @@ def vehicle_allocator_portal():
                     "Vehicle allocated successfully and request sent to HR."
                 )
                 st.rerun()
+
+    # ============================================================
+    # DELETE ACCEPTED REQUISITIONS
+    # ============================================================
+
+    st.divider()
+    st.subheader("🗑️ Delete Accepted Requisition")
+
+    st.warning(
+        "The Vehicle Allocator can permanently delete requisitions "
+        "that have been approved by the Department Manager."
+    )
+
+    # Refresh the latest GatePass data
+    dataframe = get_gatepasses()
+
+    if dataframe.empty:
+        st.info("No requisitions available for deletion.")
+        return
+
+    # Accepted means Department Manager has approved the request.
+    accepted_requests = dataframe[
+        dataframe["manager_decision"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        == "approved"
+    ].copy()
+
+    if accepted_requests.empty:
+        st.info(
+            "There are currently no Department Manager-approved "
+            "requisitions available for deletion."
+        )
+    else:
+
+        for _, row in accepted_requests.iterrows():
+
+            request_id = str(
+                row.get("request_id", "")
+            ).strip()
+
+            with st.expander(
+                f"🗑️ {request_id} — "
+                f"{row.get('requisitioner_name', '')} — "
+                f"{row.get('travel_date', '')}"
+            ):
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write(
+                        f"**Requisitioner:** "
+                        f"{row.get('requisitioner_name', '')}"
+                    )
+
+                    st.write(
+                        f"**Department:** "
+                        f"{row.get('department', '')}"
+                    )
+
+                    st.write(
+                        f"**Destination:** "
+                        f"{row.get('destination', '')}"
+                    )
+
+                    st.write(
+                        f"**Purpose:** "
+                        f"{row.get('purpose', '')}"
+                    )
+
+                with col2:
+                    st.write(
+                        f"**Travel Date:** "
+                        f"{row.get('travel_date', '')}"
+                    )
+
+                    st.write(
+                        f"**Time:** "
+                        f"{row.get('start_time', '')} - "
+                        f"{row.get('end_time', '')}"
+                    )
+
+                    st.write(
+                        f"**Vehicle:** "
+                        f"{row.get('vehicle_number', '') or 'Not allocated'}"
+                    )
+
+                    st.write(
+                        f"**Current Status:** "
+                        f"{row.get('status', '')}"
+                    )
+
+                st.error(
+                    "⚠️ This action permanently deletes the requisition "
+                    "from the Google Sheet. This cannot be undone."
+                )
+
+                confirm_delete = st.checkbox(
+                    "I understand that this requisition will be permanently deleted.",
+                    key=f"confirm_delete_{request_id}",
+                )
+
+                if st.button(
+                    "🗑️ Permanently Delete Requisition",
+                    type="secondary",
+                    key=f"delete_request_{request_id}",
+                ):
+
+                    if not confirm_delete:
+                        st.error(
+                            "Please confirm the deletion before proceeding."
+                        )
+
+                    else:
+
+                        try:
+
+                            # -----------------------------------------
+                            # SAVE AUDIT BEFORE DELETING THE REQUEST
+                            # -----------------------------------------
+
+                            audit(
+                                request_id,
+                                username,
+                                "Vehicle Allocator",
+                                "Requisition Deleted",
+                                (
+                                    "Department Manager-approved requisition "
+                                    "permanently deleted by Vehicle Allocator. "
+                                    f"Previous status: "
+                                    f"{row.get('status', '')}. "
+                                    f"Vehicle: "
+                                    f"{row.get('vehicle_number', '') or 'Not allocated'}."
+                                ),
+                            )
+
+                            # -----------------------------------------
+                            # DELETE FROM GOOGLE SHEETS
+                            # -----------------------------------------
+
+                            delete_request(request_id)
+
+                            st.success(
+                                f"Requisition {request_id} has been "
+                                "permanently deleted from the GatePasses sheet."
+                            )
+
+                            st.rerun()
+
+                        except Exception as error:
+
+                            st.error(
+                                "The requisition could not be deleted."
+                            )
+
+                            st.exception(error)
 
 
 # ============================================================
