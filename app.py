@@ -59,6 +59,7 @@ ACTIVE_STATUSES = {
     "Pending HR",
     "Pending Security",
     "Vehicle Released",
+    "Pending Security Start Mileage Verification",
     "Trip In Progress",
     "Pending Security Verification",
 }
@@ -1663,7 +1664,81 @@ def security_portal():
                         "Vehicle released. The assigned driver can now start the trip."
                     )
                     st.rerun()
+    st.divider()
+    st.subheader("Starting Mileage Awaiting Verification")
+    
+    pending_start_mileage = dataframe[
+        dataframe["status"].astype(str)
+        == "Pending Security Start Mileage Verification"
+    ]
+    
+    if pending_start_mileage.empty:
+        st.info("No starting mileage is awaiting verification.")
+    else:
+        for _, row in pending_start_mileage.iterrows():
+            request_id = str(row.get("request_id", ""))
+    
+            with st.expander(
+                f"{request_id} — "
+                f"{row.get('vehicle_number', '')} — "
+                f"{row.get('driver_name', '')}"
+            ):
+                st.write(
+                    f"**Vehicle:** "
+                    f"{row.get('vehicle_number', '')}"
+                )
+    
+                st.write(
+                    f"**Driver:** "
+                    f"{row.get('driver_name', '')}"
+                )
+    
+                st.write(
+                    f"**Travel Date:** "
+                    f"{row.get('travel_date', '')}"
+                )
+    
+                st.write(
+                    f"**Starting Mileage entered by Driver:** "
+                    f"{row.get('start_mileage', '')} km"
+                )
+    
+                mileage_remarks = st.text_input(
+                    "Starting mileage verification remarks",
+                    key=f"start_mileage_remarks_{request_id}",
+                )
+    
+                if st.button(
+                    "Verify Starting Mileage & Allow Trip",
+                    key=f"verify_start_mileage_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Trip In Progress",
+                        },
+                    )
+    
+                    audit(
+                        request_id,
+                        username,
+                        "Security",
+                        "Starting Mileage Verified",
+                        (
+                            f"Starting mileage: "
+                            f"{row.get('start_mileage', '')} km. "
+                            f"{mileage_remarks}"
+                        ),
+                    )
+    
+                    st.success(
+                        "Starting mileage verified. "
+                        "Driver can now start the trip."
+                    )
+    
+                    st.rerun()
 
+    
     st.divider()
     st.subheader("Trips Awaiting Final Security Verification")
 
@@ -1737,10 +1812,10 @@ def driver_portal():
         )
         & dataframe["status"].astype(str).isin([
             "Vehicle Released",
+            "Pending Security Start Mileage Verification",
             "Trip In Progress",
             "Pending Security Verification",
         ])
-    ]
 
     if assigned.empty:
         st.success("No active assigned trips.")
@@ -1772,14 +1847,14 @@ def driver_portal():
                     key=f"start_mileage_{request_id}",
                 )
 
-                if st.button("Start Trip", key=f"start_trip_{request_id}"):
+                if st.button("Submit Starting Mileage", key=f"start_trip_{request_id}"):
                     if start_mileage <= 0:
                         st.error("Please enter the starting mileage.")
                     else:
                         update_request(
                             request_id,
                             {
-                                "status": "Trip In Progress",
+                                "status": "Pending Security Start Mileage Verification",
                                 "start_mileage": start_mileage,
                                 "driver_started_at": now_str(),
                             },
@@ -1793,7 +1868,18 @@ def driver_portal():
                         )
                         st.success("Trip started.")
                         st.rerun()
+            elif status == "Pending Security Start Mileage Verification":
+                st.warning(
+                    "Starting mileage has been submitted and is waiting "
+                    "for Security verification."
+                )
+            
+                st.write(
+                    f"Starting mileage: "
+                    f"{row.get('start_mileage', '')} km"
+                )
 
+            
             elif status == "Trip In Progress":
                 try:
                     start_value = float(row.get("start_mileage", 0))
