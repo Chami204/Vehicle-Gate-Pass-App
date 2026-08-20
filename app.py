@@ -30,7 +30,7 @@ SHEET_HEADERS = {
     "Users": ["username", "name", "role", "password", "active","email"],
     "Departments": [
         "department", "manager_username", "manager_name",
-        "manager_password", "active","email"
+        "manager_password", "active"
     ],
     "Drivers": ["driver_username", "driver_name", "password", "active"],
     "Vehicles": [
@@ -227,45 +227,6 @@ def update_request(request_id, updates):
         )
     invalidate_data_cache()
 
-def delete_request(request_id):
-    """
-    Permanently delete a GatePass record from the Google Sheet.
-
-    The request must already exist in the GatePasses worksheet.
-    The corresponding Google Sheet row is physically deleted.
-    """
-
-    worksheet = get_or_create_worksheet("GatePasses")
-
-    # Get fresh records directly from Google Sheets
-    records = _api_call_with_backoff(
-        worksheet.get_all_records
-    )
-
-    target_row = None
-
-    for row_number, record in enumerate(records, start=2):
-        if (
-            str(record.get("request_id", "")).strip()
-            == str(request_id).strip()
-        ):
-            target_row = row_number
-            break
-
-    if target_row is None:
-        raise ValueError(
-            f"Request {request_id} was not found in Google Sheets."
-        )
-
-    # Permanently delete the Google Sheet row
-    _api_call_with_backoff(
-        lambda: worksheet.delete_rows(target_row)
-    )
-
-    # Clear Streamlit cache so the deleted record disappears immediately
-    invalidate_data_cache()
-
-
 
 def audit(request_id, username, role, action, remarks=""):
     append_row(
@@ -446,54 +407,7 @@ def get_security_email():
     ).strip()
 
     return email if email else None
-# ============================================================
-# find email by user name
-# ============================================================
 
-def get_manager_email_by_username(username):
-    departments = get_departments()
-
-    if departments.empty:
-        return None
-
-    username = str(username).strip()
-
-    matches = departments[
-        departments["manager_username"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        == username.lower()
-    ]
-
-    if matches.empty:
-        return None
-
-    email = str(
-        matches.iloc[0].get("email", "")
-    ).strip()
-
-    return email if email else None
-
-def get_hr_email():
-    users = get_users()
-
-    if users.empty:
-        return None
-
-    hr_users = users[
-        users["role"].astype(str).str.strip()
-        == "HR Manager"
-    ]
-
-    if hr_users.empty:
-        return None
-
-    email = str(
-        hr_users.iloc[0].get("email", "")
-    ).strip()
-
-    return email if email else None
 # ============================================================
 # AUTHENTICATION
 # ============================================================
@@ -822,7 +736,6 @@ def maybe_show_transfer_reminder():
 
 def _transfer_pending_request():
     draft = st.session_state.get("pending_vehicle_request")
-
     if not draft:
         return False
 
@@ -833,88 +746,8 @@ def _transfer_pending_request():
     st.session_state["_vehicle_transfer_in_progress"] = True
 
     try:
-        # -----------------------------------------
-        # SAVE REQUEST TO GOOGLE SHEETS
-        # -----------------------------------------
-
         read_sheet.clear()
-
-        append_row(
-            "GatePasses",
-            draft["row"]
-        )
-
-        # -----------------------------------------
-        # FIND DEPARTMENT MANAGER EMAIL
-        # -----------------------------------------
-
-        manager_username = str(
-            draft["row"].get("manager_username", "")
-        ).strip()
-
-        manager_email = get_manager_email_by_username(
-            manager_username
-        )
-
-        # -----------------------------------------
-        # SEND EMAIL TO DEPARTMENT MANAGER
-        # -----------------------------------------
-
-        if manager_email:
-
-            email_sent = send_email(
-                subject=(
-                    f"Vehicle Request Awaiting Approval - "
-                    f"{draft['request_id']}"
-                ),
-
-                body=(
-                    "A new vehicle request has been submitted "
-                    "and is awaiting Department Manager approval.\n\n"
-
-                    f"Request ID: {draft['request_id']}\n"
-                    f"Employee: {draft['row'].get('requisitioner_name', '')}\n"
-                    f"Department: {draft['row'].get('department', '')}\n"
-                    f"Manager Username: {manager_username}\n\n"
-
-                    f"Destination: {draft['row'].get('destination', '')}\n"
-                    f"Purpose: {draft['row'].get('purpose', '')}\n\n"
-
-                    f"Travel Date: {draft['row'].get('travel_date', '')}\n"
-                    f"Required Time: "
-                    f"{draft['row'].get('start_time', '')} - "
-                    f"{draft['row'].get('end_time', '')}\n"
-                    f"Duration: "
-                    f"{draft['row'].get('duration_minutes', '')} minutes\n\n"
-
-                    "Please log in to the Vehicle Gate Pass "
-                    "Management System and review this request."
-                ),
-
-                recipient=manager_email,
-            )
-
-            if email_sent:
-                st.success(
-                    f"Email sent successfully to Department Manager: "
-                    f"{manager_email}"
-                )
-            else:
-                st.warning(
-                    "Request was saved, but the email to the "
-                    "Department Manager could not be sent."
-                )
-
-        else:
-            st.warning(
-                f"Request was saved, but no email address was found "
-                f"for Department Manager '{manager_username}'. "
-                f"Please check the Departments sheet."
-            )
-
-        # -----------------------------------------
-        # AUDIT
-        # -----------------------------------------
+        append_row("GatePasses", draft["row"])
 
         audit(
             draft["request_id"],
@@ -925,24 +758,11 @@ def _transfer_pending_request():
         )
 
         _clear_pending_request()
-
-        st.session_state.pop(
-            "transfer_from_reminder",
-            None
-        )
-
-        st.session_state.pop(
-            "transfer_reminder_snooze_until",
-            None
-        )
-
+        st.session_state.pop("transfer_from_reminder", None)
+        st.session_state.pop("transfer_reminder_snooze_until", None)
         return True
-
     finally:
         st.session_state["_vehicle_transfer_in_progress"] = False
-
-
-
 def requisitioner_status_checker():
     st.subheader("🔎 Check Gate Pass Status")
 
@@ -1499,17 +1319,19 @@ def vehicle_allocator_portal():
 
     if pending.empty:
         st.success("No requests are awaiting vehicle allocation.")
-    else:
-        for _, row in pending.iterrows():
-            request_id = str(row.get("request_id", ""))
-    
-            try:
-                duration_minutes = int(float(row.get("duration_minutes", 0)))
-            except (ValueError, TypeError):
-                duration_minutes = 0
-    
-            requested_start = parse_time(row.get("start_time"))
-            requested_end = parse_time(row.get("end_time"))
+        return
+
+    for _, row in pending.iterrows():
+        request_id = str(row.get("request_id", ""))
+        travel_date = parse_date(row.get("travel_date"))
+
+        try:
+            duration_minutes = int(float(row.get("duration_minutes", 0)))
+        except (ValueError, TypeError):
+            duration_minutes = 0
+
+        requested_start = parse_time(row.get("start_time"))
+        requested_end = parse_time(row.get("end_time"))
 
         with st.expander(
             f"{request_id} — {row.get('requisitioner_name', '')} — {row.get('travel_date', '')}"
@@ -1668,66 +1490,7 @@ def vehicle_allocator_portal():
                         "driver_name": driver_info.get("driver_name", ""),
                     },
                 )
-                # -------------------------------------------------
-                # EMAIL HR MANAGER
-                # -------------------------------------------------
-                
-                hr_email = get_hr_email()
-                
-                if hr_email:
-                
-                    email_sent = send_email(
-                        subject=(
-                            f"Vehicle Gate Pass Awaiting HR Approval - "
-                            f"{request_id}"
-                        ),
-                        body=(
-                            f"A vehicle has been allocated and the request "
-                            f"is now awaiting HR approval.\n\n"
-                
-                            f"Request ID: {request_id}\n"
-                            f"Employee: "
-                            f"{row.get('requisitioner_name', '')}\n"
-                            f"Department: "
-                            f"{row.get('department', '')}\n"
-                            f"Destination: "
-                            f"{row.get('destination', '')}\n"
-                            f"Purpose: "
-                            f"{row.get('purpose', '')}\n\n"
-                
-                            f"Travel Date: "
-                            f"{row.get('travel_date', '')}\n"
-                            f"Confirmed Departure: "
-                            f"{allocator_start_dt.strftime('%H:%M')}\n"
-                            f"Confirmed Return: "
-                            f"{allocator_end_dt.strftime('%H:%M')}\n\n"
-                
-                            f"Vehicle Number: "
-                            f"{selected_vehicle_number}\n"
-                            f"Vehicle Type: "
-                            f"{selected_vehicle.get('vehicle_type', '')}\n"
-                            f"Fixed Driver: "
-                            f"{driver_info.get('driver_name', '')}\n"
-                            f"Driver Username: "
-                            f"{driver_info.get('driver_username', '')}\n\n"
-                
-                            f"Please log in to the Vehicle Gate Pass "
-                            f"Management System and review the request."
-                        ),
-                        recipient=hr_email,
-                    )
-                
-                    if not email_sent:
-                        st.warning(
-                            "Vehicle allocation was successful, but the email "
-                            "to HR could not be sent."
-                        )
-                
-                else:
-                    st.warning(
-                        "Vehicle allocation was successful, but no active "
-                        "HR Manager email address was found."
-                    )
+
                 audit(
                     request_id,
                     username,
@@ -1747,163 +1510,6 @@ def vehicle_allocator_portal():
                     "Vehicle allocated successfully and request sent to HR."
                 )
                 st.rerun()
-
-    # ============================================================
-    # DELETE ACCEPTED REQUISITIONS
-    # ============================================================
-
-    st.divider()
-    st.subheader("🗑️ Delete Accepted Requisition")
-
-    st.warning(
-        "The Vehicle Allocator can permanently delete requisitions "
-        "that have been approved by the Department Manager."
-    )
-
-    # Refresh the latest GatePass data
-    dataframe = get_gatepasses()
-
-    if dataframe.empty:
-        st.info("No requisitions available for deletion.")
-        return
-
-    # Accepted means Department Manager has approved the request.
-    accepted_requests = dataframe[
-        dataframe["manager_decision"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        == "approved"
-    ].copy()
-
-    if accepted_requests.empty:
-        st.info(
-            "There are currently no Department Manager-approved "
-            "requisitions available for deletion."
-        )
-    else:
-
-        for _, row in accepted_requests.iterrows():
-
-            request_id = str(
-                row.get("request_id", "")
-            ).strip()
-
-            with st.expander(
-                f"🗑️ {request_id} — "
-                f"{row.get('requisitioner_name', '')} — "
-                f"{row.get('travel_date', '')}"
-            ):
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.write(
-                        f"**Requisitioner:** "
-                        f"{row.get('requisitioner_name', '')}"
-                    )
-
-                    st.write(
-                        f"**Department:** "
-                        f"{row.get('department', '')}"
-                    )
-
-                    st.write(
-                        f"**Destination:** "
-                        f"{row.get('destination', '')}"
-                    )
-
-                    st.write(
-                        f"**Purpose:** "
-                        f"{row.get('purpose', '')}"
-                    )
-
-                with col2:
-                    st.write(
-                        f"**Travel Date:** "
-                        f"{row.get('travel_date', '')}"
-                    )
-
-                    st.write(
-                        f"**Time:** "
-                        f"{row.get('start_time', '')} - "
-                        f"{row.get('end_time', '')}"
-                    )
-
-                    st.write(
-                        f"**Vehicle:** "
-                        f"{row.get('vehicle_number', '') or 'Not allocated'}"
-                    )
-
-                    st.write(
-                        f"**Current Status:** "
-                        f"{row.get('status', '')}"
-                    )
-
-                st.error(
-                    "⚠️ This action permanently deletes the requisition "
-                    "from the Google Sheet. This cannot be undone."
-                )
-
-                confirm_delete = st.checkbox(
-                    "I understand that this requisition will be permanently deleted.",
-                    key=f"confirm_delete_{request_id}",
-                )
-
-                if st.button(
-                    "🗑️ Permanently Delete Requisition",
-                    type="secondary",
-                    key=f"delete_request_{request_id}",
-                ):
-
-                    if not confirm_delete:
-                        st.error(
-                            "Please confirm the deletion before proceeding."
-                        )
-
-                    else:
-
-                        try:
-
-                            # -----------------------------------------
-                            # SAVE AUDIT BEFORE DELETING THE REQUEST
-                            # -----------------------------------------
-
-                            audit(
-                                request_id,
-                                username,
-                                "Vehicle Allocator",
-                                "Requisition Deleted",
-                                (
-                                    "Department Manager-approved requisition "
-                                    "permanently deleted by Vehicle Allocator. "
-                                    f"Previous status: "
-                                    f"{row.get('status', '')}. "
-                                    f"Vehicle: "
-                                    f"{row.get('vehicle_number', '') or 'Not allocated'}."
-                                ),
-                            )
-
-                            # -----------------------------------------
-                            # DELETE FROM GOOGLE SHEETS
-                            # -----------------------------------------
-
-                            delete_request(request_id)
-
-                            st.success(
-                                f"Requisition {request_id} has been "
-                                "permanently deleted from the GatePasses sheet."
-                            )
-
-                            st.rerun()
-
-                        except Exception as error:
-
-                            st.error(
-                                "The requisition could not be deleted."
-                            )
-
-                            st.exception(error)
 
 
 # ============================================================
