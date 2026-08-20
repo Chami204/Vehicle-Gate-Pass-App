@@ -1816,7 +1816,7 @@ def driver_portal():
             "Trip In Progress",
             "Pending Security Verification",
         ])
-
+    ]
     if assigned.empty:
         st.success("No active assigned trips.")
         return
