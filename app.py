@@ -1502,14 +1502,14 @@ def vehicle_allocator_portal():
     else:
         for _, row in pending.iterrows():
             request_id = str(row.get("request_id", ""))
-
-        try:
-            duration_minutes = int(float(row.get("duration_minutes", 0)))
-        except (ValueError, TypeError):
-            duration_minutes = 0
-
-        requested_start = parse_time(row.get("start_time"))
-        requested_end = parse_time(row.get("end_time"))
+    
+            try:
+                duration_minutes = int(float(row.get("duration_minutes", 0)))
+            except (ValueError, TypeError):
+                duration_minutes = 0
+    
+            requested_start = parse_time(row.get("start_time"))
+            requested_end = parse_time(row.get("end_time"))
 
         with st.expander(
             f"{request_id} — {row.get('requisitioner_name', '')} — {row.get('travel_date', '')}"
