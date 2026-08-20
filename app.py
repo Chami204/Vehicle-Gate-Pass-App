@@ -30,7 +30,7 @@ SHEET_HEADERS = {
     "Users": ["username", "name", "role", "password", "active","email"],
     "Departments": [
         "department", "manager_username", "manager_name",
-        "manager_password", "active"
+        "manager_password", "active", "email"
     ],
     "Drivers": ["driver_username", "driver_name", "password", "active"],
     "Vehicles": [
@@ -240,7 +240,24 @@ def audit(request_id, username, role, action, remarks=""):
             "remarks": remarks,
         },
     )
+def delete_request(request_id):
+    worksheet = get_or_create_worksheet("GatePasses")
 
+    records = worksheet.get_all_records()
+
+    target_row = None
+
+    for row_number, record in enumerate(records, start=2):
+        if str(record.get("request_id", "")).strip() == str(request_id).strip():
+            target_row = row_number
+            break
+
+    if target_row is None:
+        raise ValueError(f"Request {request_id} was not found.")
+
+    worksheet.delete_rows(target_row)
+
+    invalidate_data_cache()
 
 # ============================================================
 # HELPERS
@@ -1511,6 +1528,87 @@ def vehicle_allocator_portal():
                 )
                 st.rerun()
 
+
+    
+    st.divider()
+    st.subheader("🗑 Delete Vehicle Requisition")
+
+    all_requests = get_gatepasses()
+
+    if all_requests.empty:
+        st.info("No requisitions available.")
+    else:
+
+        for _, row in all_requests.iterrows():
+
+            request_id = str(
+                row.get("request_id", "")
+            ).strip()
+
+            with st.expander(
+                f"{request_id} — "
+                f"{row.get('requisitioner_name', '')}"
+            ):
+
+                st.write(
+                    f"**Department:** {row.get('department', '')}"
+                )
+
+                st.write(
+                    f"**Travel Date:** {row.get('travel_date', '')}"
+                )
+
+                st.write(
+                    f"**Status:** {row.get('status', '')}"
+                )
+
+                st.write(
+                    f"**Destination:** {row.get('destination', '')}"
+                )
+
+                confirm_delete = st.checkbox(
+                    "Confirm permanent deletion",
+                    key=f"delete_confirm_{request_id}",
+                )
+
+                if st.button(
+                    "🗑 Delete Requisition",
+                    key=f"delete_request_{request_id}",
+                ):
+
+                    if not confirm_delete:
+                        st.error(
+                            "Please confirm deletion first."
+                        )
+
+                    else:
+                        try:
+
+                            audit(
+                                request_id,
+                                username,
+                                "Vehicle Allocator",
+                                "Requisition Deleted",
+                                (
+                                    f"Deleted by Vehicle Allocator. "
+                                    f"Previous status: "
+                                    f"{row.get('status', '')}"
+                                ),
+                            )
+
+                            delete_request(request_id)
+
+                            st.success(
+                                f"{request_id} deleted successfully."
+                            )
+
+                            st.rerun()
+
+                        except Exception as error:
+                            st.error(
+                                "Deletion failed."
+                            )
+                            st.exception(error)
 
 # ============================================================
 # HR
