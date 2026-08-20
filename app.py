@@ -59,6 +59,7 @@ ACTIVE_STATUSES = {
     "Pending HR",
     "Pending Security",
     "Vehicle Released",
+    "Pending Security Start Mileage Verification",
     "Trip In Progress",
     "Pending Security Verification",
 }
@@ -383,7 +384,29 @@ def get_allocator_email():
         )
     ).strip()
 
+def get_security_email():
 
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    security_users = users[
+        users["role"].astype(str).str.strip()
+        == "Security"
+    ]
+
+    if security_users.empty:
+        return None
+
+    email = str(
+        security_users.iloc[0].get(
+            "email",
+            "",
+        )
+    ).strip()
+
+    return email if email else None
 
 # ============================================================
 # AUTHENTICATION
@@ -740,7 +763,147 @@ def _transfer_pending_request():
         return True
     finally:
         st.session_state["_vehicle_transfer_in_progress"] = False
+def requisitioner_status_checker():
+    st.subheader("🔎 Check Gate Pass Status")
 
+    st.write(
+        "Enter the Request ID you received after submitting your vehicle request."
+    )
+
+    request_id = st.text_input(
+        "Request ID",
+        placeholder="Example: REQ-XXXXXXXX",
+        key="requisitioner_status_request_id",
+    ).strip()
+
+    if st.button(
+        "Check Status",
+        type="primary",
+        key="check_requisitioner_status",
+    ):
+        if not request_id:
+            st.warning("Please enter your Request ID.")
+            return
+
+        dataframe = get_gatepasses()
+
+        if dataframe.empty:
+            st.error("No vehicle requests are currently available.")
+            return
+
+        matches = dataframe[
+            dataframe["request_id"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == request_id.upper()
+        ]
+
+        if matches.empty:
+            st.error(
+                "Request ID not found. Please check the Request ID and try again."
+            )
+            return
+
+        row = matches.iloc[0]
+
+        status = str(row.get("status", "")).strip()
+
+        st.success(f"Request found: **{request_id}**")
+
+        st.markdown(f"### Current Status: **{status}**")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.write(
+                f"**Requisitioner:** "
+                f"{row.get('requisitioner_name', '')}"
+            )
+
+            st.write(
+                f"**Department:** "
+                f"{row.get('department', '')}"
+            )
+
+            st.write(
+                f"**Travel Date:** "
+                f"{row.get('travel_date', '')}"
+            )
+
+            st.write(
+                f"**Destination:** "
+                f"{row.get('destination', '')}"
+            )
+
+        with col2:
+            st.write(
+                f"**Vehicle:** "
+                f"{row.get('vehicle_number', '') or 'Not allocated yet'}"
+            )
+
+            st.write(
+                f"**Driver:** "
+                f"{row.get('driver_name', '') or 'Not allocated yet'}"
+            )
+
+            st.write(
+                f"**Vehicle Time:** "
+                f"{row.get('start_time', '')} - "
+                f"{row.get('end_time', '')}"
+            )
+
+        st.divider()
+
+        st.subheader("Approval Progress")
+
+        manager_decision = str(
+            row.get("manager_decision", "")
+        ).strip()
+
+        hr_decision = str(
+            row.get("hr_decision", "")
+        ).strip()
+
+        if manager_decision == "Approved":
+            st.success("✅ Department Manager: Approved")
+        elif manager_decision == "Rejected":
+            st.error("❌ Department Manager: Rejected")
+        else:
+            st.info("⏳ Department Manager: Pending")
+
+        if row.get("vehicle_number", ""):
+            st.success("✅ Vehicle Allocation: Completed")
+        else:
+            st.info("⏳ Vehicle Allocation: Pending")
+
+        if hr_decision == "Approved":
+            st.success("✅ HR Manager: Approved")
+        elif hr_decision == "Rejected":
+            st.error("❌ HR Manager: Rejected")
+        else:
+            st.info("⏳ HR Manager: Pending")
+
+        if status in [
+            "Pending Security",
+            "Vehicle Released",
+            "Trip In Progress",
+            "Pending Security Verification",
+            "Completed",
+        ]:
+            st.success("✅ Security Stage: Reached")
+
+        if status == "Completed":
+            st.success("🎉 Gate Pass process completed.")
+
+        rejection_reason = str(
+            row.get("rejection_reason", "")
+        ).strip()
+
+        if rejection_reason:
+            st.error(
+                f"**Reason:** {rejection_reason}"
+            )
 
 def employee_portal():
     st.header("🚐 Vehicle Requisition")
@@ -750,7 +913,15 @@ def employee_portal():
         "The Vehicle Allocator will select an available vehicle for "
         "your requested time."
     )
+    st.divider()
 
+    requisitioner_status_checker()
+
+    st.divider()
+
+    st.subheader("📝 Submit a New Vehicle Request")
+
+    
     if st.session_state.get("transfer_from_reminder"):
         try:
             with st.spinner("Transferring request..."):
@@ -1393,6 +1564,10 @@ def hr_portal():
 
                 with col_a:
                     if st.button("HR Approve", key=f"hr_approve_{request_id}"):
+                    
+                        # -----------------------------------------
+                        # Update request after HR approval
+                        # -----------------------------------------
                         update_request(
                             request_id,
                             {
@@ -1402,6 +1577,74 @@ def hr_portal():
                                 "hr_approved_at": now_str(),
                             },
                         )
+                    
+                        # -----------------------------------------
+                        # Send email notification to Security
+                        # -----------------------------------------
+                        security_email = get_security_email()
+                    
+                        if security_email:
+                    
+                            email_sent = send_email(
+                                subject=(
+                                    f"Vehicle Gate Pass Approved - "
+                                    f"{request_id}"
+                                ),
+                                body=(
+                                    f"A vehicle gate pass has been approved by HR "
+                                    f"and is now awaiting Security action.\n\n"
+                    
+                                    f"Request ID: {request_id}\n"
+                                    f"Employee: "
+                                    f"{row.get('requisitioner_name', '')}\n"
+                                    f"Department: "
+                                    f"{row.get('department', '')}\n"
+                                    f"Destination: "
+                                    f"{row.get('destination', '')}\n"
+                                    f"Purpose: "
+                                    f"{row.get('purpose', '')}\n\n"
+                    
+                                    f"Travel Date: "
+                                    f"{row.get('travel_date', '')}\n"
+                                    f"Departure Time: "
+                                    f"{row.get('start_time', '')}\n"
+                                    f"Return Time: "
+                                    f"{row.get('end_time', '')}\n\n"
+                    
+                                    f"Vehicle Number: "
+                                    f"{row.get('vehicle_number', '')}\n"
+                                    f"Vehicle Type: "
+                                    f"{row.get('vehicle_type', '')}\n"
+                                    f"Fixed Driver: "
+                                    f"{row.get('driver_name', '')}\n"
+                                    f"Driver Username: "
+                                    f"{row.get('driver_username', '')}\n\n"
+                    
+                                    f"HR Approved By: {username}\n"
+                                    f"HR Approved At: {now_str()}\n\n"
+                    
+                                    f"Please log in to the Vehicle Gate Pass "
+                                    f"Management System and verify/release the "
+                                    f"vehicle when appropriate."
+                                ),
+                                recipient=security_email,
+                            )
+                    
+                            if not email_sent:
+                                st.warning(
+                                    "HR approval was successful, but the email "
+                                    "notification to Security could not be sent."
+                                )
+                    
+                        else:
+                            st.warning(
+                                "HR approval was successful, but no active Security "
+                                "user email address was found in the Users sheet."
+                            )
+                    
+                        # -----------------------------------------
+                        # Audit HR approval
+                        # -----------------------------------------
                         audit(
                             request_id,
                             username,
@@ -1409,9 +1652,11 @@ def hr_portal():
                             "HR Approved",
                             reason,
                         )
+                    
                         st.success(
-                            "Request approved and sent to Security."
+                            "Request approved by HR and sent to Security."
                         )
+                    
                         st.rerun()
 
                 with col_b:
@@ -1515,7 +1760,81 @@ def security_portal():
                         "Vehicle released. The assigned driver can now start the trip."
                     )
                     st.rerun()
+    st.divider()
+    st.subheader("Starting Mileage Awaiting Verification")
+    
+    pending_start_mileage = dataframe[
+        dataframe["status"].astype(str)
+        == "Pending Security Start Mileage Verification"
+    ]
+    
+    if pending_start_mileage.empty:
+        st.info("No starting mileage is awaiting verification.")
+    else:
+        for _, row in pending_start_mileage.iterrows():
+            request_id = str(row.get("request_id", ""))
+    
+            with st.expander(
+                f"{request_id} — "
+                f"{row.get('vehicle_number', '')} — "
+                f"{row.get('driver_name', '')}"
+            ):
+                st.write(
+                    f"**Vehicle:** "
+                    f"{row.get('vehicle_number', '')}"
+                )
+    
+                st.write(
+                    f"**Driver:** "
+                    f"{row.get('driver_name', '')}"
+                )
+    
+                st.write(
+                    f"**Travel Date:** "
+                    f"{row.get('travel_date', '')}"
+                )
+    
+                st.write(
+                    f"**Starting Mileage entered by Driver:** "
+                    f"{row.get('start_mileage', '')} km"
+                )
+    
+                mileage_remarks = st.text_input(
+                    "Starting mileage verification remarks",
+                    key=f"start_mileage_remarks_{request_id}",
+                )
+    
+                if st.button(
+                    "Verify Starting Mileage & Allow Trip",
+                    key=f"verify_start_mileage_{request_id}",
+                ):
+                    update_request(
+                        request_id,
+                        {
+                            "status": "Trip In Progress",
+                        },
+                    )
+    
+                    audit(
+                        request_id,
+                        username,
+                        "Security",
+                        "Starting Mileage Verified",
+                        (
+                            f"Starting mileage: "
+                            f"{row.get('start_mileage', '')} km. "
+                            f"{mileage_remarks}"
+                        ),
+                    )
+    
+                    st.success(
+                        "Starting mileage verified. "
+                        "Driver can now start the trip."
+                    )
+    
+                    st.rerun()
 
+    
     st.divider()
     st.subheader("Trips Awaiting Final Security Verification")
 
@@ -1589,11 +1908,11 @@ def driver_portal():
         )
         & dataframe["status"].astype(str).isin([
             "Vehicle Released",
+            "Pending Security Start Mileage Verification",
             "Trip In Progress",
             "Pending Security Verification",
         ])
     ]
-
     if assigned.empty:
         st.success("No active assigned trips.")
         return
@@ -1624,14 +1943,14 @@ def driver_portal():
                     key=f"start_mileage_{request_id}",
                 )
 
-                if st.button("Start Trip", key=f"start_trip_{request_id}"):
+                if st.button("Submit Starting Mileage", key=f"start_trip_{request_id}"):
                     if start_mileage <= 0:
                         st.error("Please enter the starting mileage.")
                     else:
                         update_request(
                             request_id,
                             {
-                                "status": "Trip In Progress",
+                                "status": "Pending Security Start Mileage Verification",
                                 "start_mileage": start_mileage,
                                 "driver_started_at": now_str(),
                             },
@@ -1645,7 +1964,18 @@ def driver_portal():
                         )
                         st.success("Trip started.")
                         st.rerun()
+            elif status == "Pending Security Start Mileage Verification":
+                st.warning(
+                    "Starting mileage has been submitted and is waiting "
+                    "for Security verification."
+                )
+            
+                st.write(
+                    f"Starting mileage: "
+                    f"{row.get('start_mileage', '')} km"
+                )
 
+            
             elif status == "Trip In Progress":
                 try:
                     start_value = float(row.get("start_mileage", 0))
