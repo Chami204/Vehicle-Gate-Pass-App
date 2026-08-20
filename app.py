@@ -30,7 +30,7 @@ SHEET_HEADERS = {
     "Users": ["username", "name", "role", "password", "active","email"],
     "Departments": [
         "department", "manager_username", "manager_name",
-        "manager_password", "active"
+        "manager_password", "active","email"
     ],
     "Drivers": ["driver_username", "driver_name", "password", "active"],
     "Vehicles": [
@@ -407,7 +407,50 @@ def get_security_email():
     ).strip()
 
     return email if email else None
+# ============================================================
+# find email by user name
+# ============================================================
 
+def get_user_email_by_username(username):
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    username = str(username).strip()
+
+    matches = users[
+        users["username"].astype(str).str.strip() == username
+    ]
+
+    if matches.empty:
+        return None
+
+    email = str(
+        matches.iloc[0].get("email", "")
+    ).strip()
+
+    return email if email else None
+
+def get_hr_email():
+    users = get_users()
+
+    if users.empty:
+        return None
+
+    hr_users = users[
+        users["role"].astype(str).str.strip()
+        == "HR Manager"
+    ]
+
+    if hr_users.empty:
+        return None
+
+    email = str(
+        hr_users.iloc[0].get("email", "")
+    ).strip()
+
+    return email if email else None
 # ============================================================
 # AUTHENTICATION
 # ============================================================
@@ -748,7 +791,66 @@ def _transfer_pending_request():
     try:
         read_sheet.clear()
         append_row("GatePasses", draft["row"])
-
+        
+        # -------------------------------------------------
+        # EMAIL DEPARTMENT MANAGER
+        # -------------------------------------------------
+        
+        manager_username = str(
+            draft["row"].get("manager_username", "")
+        ).strip()
+        
+        manager_email = get_user_email_by_username(
+            manager_username
+        )
+        
+        if manager_email:
+        
+            email_sent = send_email(
+                subject=(
+                    f"Vehicle Request Awaiting Approval - "
+                    f"{draft['request_id']}"
+                ),
+                body=(
+                    f"A new vehicle request has been submitted "
+                    f"and is awaiting Department Manager approval.\n\n"
+        
+                    f"Request ID: {draft['request_id']}\n"
+                    f"Employee: "
+                    f"{draft['row'].get('requisitioner_name', '')}\n"
+                    f"Department: "
+                    f"{draft['row'].get('department', '')}\n"
+                    f"Destination: "
+                    f"{draft['row'].get('destination', '')}\n"
+                    f"Purpose: "
+                    f"{draft['row'].get('purpose', '')}\n\n"
+        
+                    f"Travel Date: "
+                    f"{draft['row'].get('travel_date', '')}\n"
+                    f"Required Time: "
+                    f"{draft['row'].get('start_time', '')} - "
+                    f"{draft['row'].get('end_time', '')}\n"
+                    f"Duration: "
+                    f"{draft['row'].get('duration_minutes', '')} minutes\n\n"
+        
+                    f"Please log in to the Vehicle Gate Pass "
+                    f"Management System and review this request."
+                ),
+                recipient=manager_email,
+            )
+        
+            if not email_sent:
+                st.warning(
+                    "Request was saved, but the email to the "
+                    "Department Manager could not be sent."
+                )
+        
+        else:
+            st.warning(
+                "Request was saved, but no email address was found "
+                "for the Department Manager."
+            )
+        
         audit(
             draft["request_id"],
             "employee",
@@ -1490,7 +1592,66 @@ def vehicle_allocator_portal():
                         "driver_name": driver_info.get("driver_name", ""),
                     },
                 )
-
+                # -------------------------------------------------
+                # EMAIL HR MANAGER
+                # -------------------------------------------------
+                
+                hr_email = get_hr_email()
+                
+                if hr_email:
+                
+                    email_sent = send_email(
+                        subject=(
+                            f"Vehicle Gate Pass Awaiting HR Approval - "
+                            f"{request_id}"
+                        ),
+                        body=(
+                            f"A vehicle has been allocated and the request "
+                            f"is now awaiting HR approval.\n\n"
+                
+                            f"Request ID: {request_id}\n"
+                            f"Employee: "
+                            f"{row.get('requisitioner_name', '')}\n"
+                            f"Department: "
+                            f"{row.get('department', '')}\n"
+                            f"Destination: "
+                            f"{row.get('destination', '')}\n"
+                            f"Purpose: "
+                            f"{row.get('purpose', '')}\n\n"
+                
+                            f"Travel Date: "
+                            f"{row.get('travel_date', '')}\n"
+                            f"Confirmed Departure: "
+                            f"{allocator_start_dt.strftime('%H:%M')}\n"
+                            f"Confirmed Return: "
+                            f"{allocator_end_dt.strftime('%H:%M')}\n\n"
+                
+                            f"Vehicle Number: "
+                            f"{selected_vehicle_number}\n"
+                            f"Vehicle Type: "
+                            f"{selected_vehicle.get('vehicle_type', '')}\n"
+                            f"Fixed Driver: "
+                            f"{driver_info.get('driver_name', '')}\n"
+                            f"Driver Username: "
+                            f"{driver_info.get('driver_username', '')}\n\n"
+                
+                            f"Please log in to the Vehicle Gate Pass "
+                            f"Management System and review the request."
+                        ),
+                        recipient=hr_email,
+                    )
+                
+                    if not email_sent:
+                        st.warning(
+                            "Vehicle allocation was successful, but the email "
+                            "to HR could not be sent."
+                        )
+                
+                else:
+                    st.warning(
+                        "Vehicle allocation was successful, but no active "
+                        "HR Manager email address was found."
+                    )
                 audit(
                     request_id,
                     username,
