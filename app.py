@@ -1029,4 +1029,4 @@ def build_workflow_email_body(
 
     request_id = str(
         row.get(
-        )      
+        ))    
