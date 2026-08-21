@@ -228,6 +228,33 @@ def update_request(request_id, updates):
     invalidate_data_cache()
 
 
+def delete_request(request_id):
+    """Permanently delete a GatePass row from the Google Sheets worksheet."""
+    worksheet = get_or_create_worksheet("GatePasses")
+
+    # Read directly from Google Sheets so the physical row number is current.
+    records = _api_call_with_backoff(worksheet.get_all_records)
+    target_row = None
+
+    for row_number, record in enumerate(records, start=2):
+        if (
+            str(record.get("request_id", "")).strip().lower()
+            == str(request_id).strip().lower()
+        ):
+            target_row = row_number
+            break
+
+    if target_row is None:
+        invalidate_data_cache()
+        raise ValueError(
+            f"Request {request_id} was not found in the GatePasses Google Sheet."
+        )
+
+    # Physically delete the entire Google Sheets row.
+    _api_call_with_backoff(lambda: worksheet.delete_rows(target_row))
+    invalidate_data_cache()
+
+
 def audit(request_id, username, role, action, remarks=""):
     append_row(
         "ApprovalAudit",
@@ -1460,7 +1487,6 @@ def vehicle_allocator_portal():
 
     if pending.empty:
         st.success("No requests are awaiting vehicle allocation.")
-        return
 
     for _, row in pending.iterrows():
         request_id = str(row.get("request_id", ""))
@@ -1710,6 +1736,105 @@ def vehicle_allocator_portal():
                     "Vehicle allocated successfully and request sent to HR."
                 )
                 st.rerun()
+
+
+    # ============================================================
+    # DELETE ANY VEHICLE REQUISITION
+    # ============================================================
+
+    st.divider()
+    st.subheader("🗑️ Delete Vehicle Requisition")
+    st.warning(
+        "The Vehicle Allocator can permanently delete ANY vehicle requisition "
+        "from the GatePasses Google Sheet, regardless of its current status. "
+        "This physically deletes the entire row and cannot be undone."
+    )
+
+    all_requests = get_gatepasses()
+
+    if all_requests.empty:
+        st.info("There are no vehicle requisitions available to delete.")
+    else:
+        for _, delete_row in all_requests.iterrows():
+            delete_request_id = str(delete_row.get("request_id", "")).strip()
+            if not delete_request_id:
+                continue
+
+            delete_status = str(delete_row.get("status", "")).strip() or "Unknown"
+
+            with st.expander(
+                f"🗑️ {delete_request_id} — "
+                f"{delete_row.get('requisitioner_name', '')} — "
+                f"{delete_row.get('travel_date', '')} — "
+                f"Status: {delete_status}"
+            ):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write(f"**Requisitioner:** {delete_row.get('requisitioner_name', '')}")
+                    st.write(f"**Department:** {delete_row.get('department', '')}")
+                    st.write(f"**Destination:** {delete_row.get('destination', '')}")
+                    st.write(f"**Purpose:** {delete_row.get('purpose', '')}")
+
+                with col2:
+                    st.write(f"**Travel Date:** {delete_row.get('travel_date', '')}")
+                    st.write(
+                        f"**Time:** {delete_row.get('start_time', '')} - "
+                        f"{delete_row.get('end_time', '')}"
+                    )
+                    st.write(
+                        f"**Vehicle:** "
+                        f"{delete_row.get('vehicle_number', '') or 'Not allocated'}"
+                    )
+                    st.write(f"**Current Status:** {delete_status}")
+
+                st.error(
+                    "⚠️ This will permanently delete the requisition row from "
+                    "the GatePasses Google Sheet. The action cannot be undone."
+                )
+
+                confirm_delete = st.checkbox(
+                    "I understand that this requisition will be permanently deleted.",
+                    key=f"confirm_delete_{delete_request_id}",
+                )
+
+                if st.button(
+                    "🗑️ Permanently Delete Requisition",
+                    type="secondary",
+                    key=f"delete_request_{delete_request_id}",
+                ):
+                    if not confirm_delete:
+                        st.error("Please confirm the deletion before proceeding.")
+                        continue
+
+                    try:
+                        # Keep the audit record even though the GatePass row itself
+                        # will be physically deleted.
+                        audit(
+                            delete_request_id,
+                            username,
+                            "Vehicle Allocator",
+                            "Requisition Deleted",
+                            (
+                                "Entire GatePass row permanently deleted by Vehicle Allocator. "
+                                f"Previous status: {delete_status}. "
+                                f"Vehicle: {delete_row.get('vehicle_number', '') or 'Not allocated'}."
+                            ),
+                        )
+
+                        delete_request(delete_request_id)
+
+                        st.success(
+                            f"Requisition {delete_request_id} was permanently deleted "
+                            "from the GatePasses Google Sheet."
+                        )
+                        st.rerun()
+
+                    except Exception as error:
+                        st.error(
+                            f"Requisition {delete_request_id} could not be deleted."
+                        )
+                        st.exception(error)
 
 
 # ============================================================
